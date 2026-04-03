@@ -632,6 +632,73 @@ func TestThreadsListSummaryOmitsCommentBodies(t *testing.T) {
 	}
 }
 
+func TestThreadsReanchorAcceptsAnchorFile(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	docPath := filepath.Join(t.TempDir(), "one.md")
+	if err := os.WriteFile(docPath, []byte("# Title\n\nHello world"), 0o644); err != nil {
+		t.Fatalf("seed document: %v", err)
+	}
+	doc, err := st.OpenDocument(context.Background(), docPath, "tester")
+	if err != nil {
+		t.Fatalf("open document: %v", err)
+	}
+	anchor, err := docmodel.AnchorFromSelection(doc, 9, 14)
+	if err != nil {
+		t.Fatalf("anchor selection: %v", err)
+	}
+	thread, err := st.CreateThread(context.Background(), doc.ID, *anchor, "Address this", "reviewer")
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, _, err := st.ApplyAnchorEdit(context.Background(), doc.ID, *anchor, "Team", "editor"); err != nil {
+		t.Fatalf("apply anchor edit: %v", err)
+	}
+
+	updatedDoc, err := st.GetDocument(context.Background(), doc.ID, "tester")
+	if err != nil {
+		t.Fatalf("get updated document: %v", err)
+	}
+	newAnchor, err := docmodel.AnchorFromSelection(updatedDoc, 9, 13)
+	if err != nil {
+		t.Fatalf("new anchor selection: %v", err)
+	}
+	anchorPath := filepath.Join(t.TempDir(), "anchor.json")
+	anchorBody, err := json.Marshal(newAnchor)
+	if err != nil {
+		t.Fatalf("marshal anchor: %v", err)
+	}
+	if err := os.WriteFile(anchorPath, anchorBody, 0o644); err != nil {
+		t.Fatalf("write anchor: %v", err)
+	}
+
+	app := server.New(st, "")
+	ts := httptest.NewServer(app.Routes())
+	t.Cleanup(ts.Close)
+
+	cmd := NewRootCmd()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	cmd.SetArgs([]string{
+		"--server", ts.URL,
+		"--actor", "tester",
+		"--json",
+		"threads", "reanchor", docPath, thread.ID,
+		"--anchor-file", anchorPath,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute cli: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"quote": "Team"`) {
+		t.Fatalf("expected reanchored thread output, got %s", stdout.String())
+	}
+}
+
 func TestEditJSONSupportsThreadFlag(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -689,6 +756,65 @@ func TestEditJSONSupportsThreadFlag(t *testing.T) {
 	}
 	if refetched.Anchor.Quote != "Team" {
 		t.Fatalf("expected thread anchor to retarget, got %+v", refetched.Anchor)
+	}
+}
+
+func TestThreadsReanchorRepairsUnresolvedThread(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	docPath := filepath.Join(t.TempDir(), "one.md")
+	if err := os.WriteFile(docPath, []byte("# Title\n\nHello world"), 0o644); err != nil {
+		t.Fatalf("seed document: %v", err)
+	}
+	doc, err := st.OpenDocument(context.Background(), docPath, "tester")
+	if err != nil {
+		t.Fatalf("open document: %v", err)
+	}
+	anchor, err := docmodel.AnchorFromSelection(doc, 9, 14)
+	if err != nil {
+		t.Fatalf("anchor selection: %v", err)
+	}
+	thread, err := st.CreateThread(context.Background(), doc.ID, *anchor, "Address this", "reviewer")
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, _, err := st.ApplyAnchorEdit(context.Background(), doc.ID, *anchor, "Team", "tester"); err != nil {
+		t.Fatalf("apply anchor edit: %v", err)
+	}
+
+	app := server.New(st, "")
+	ts := httptest.NewServer(app.Routes())
+	t.Cleanup(ts.Close)
+
+	cmd := NewRootCmd()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	cmd.SetArgs([]string{
+		"--server", ts.URL,
+		"--actor", "tester",
+		"--json",
+		"threads", "reanchor", docPath, thread.ID,
+		"--start", "9",
+		"--end", "13",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute cli: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"quote": "Team"`) {
+		t.Fatalf("expected reanchored thread output, got %s", stdout.String())
+	}
+
+	refetched, err := st.GetThread(context.Background(), doc.ID, thread.ID, "tester")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if refetched.Anchor.Quote != "Team" || !refetched.Anchor.Resolved {
+		t.Fatalf("expected persisted reanchored thread, got %+v", refetched.Anchor)
 	}
 }
 

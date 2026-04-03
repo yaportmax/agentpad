@@ -583,6 +583,51 @@ func newThreadsCmd(opts *RootOptions) *cobra.Command {
 	reply.Flags().String("body", "", "Reply body")
 	reply.Flags().String("body-file", "", "Read reply body from a file ('-' for stdin)")
 	cmd.AddCommand(reply)
+	reanchor := &cobra.Command{
+		Use:   "reanchor <file> <thread-id>",
+		Short: "Re-anchor a thread to a new span",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedPath, err := resolveCLIPath(args[0])
+			if err != nil {
+				return err
+			}
+			anchorJSON, _ := cmd.Flags().GetString("anchor-json")
+			anchorFile, _ := cmd.Flags().GetString("anchor-file")
+			anchor, err := readAnchorInput(anchorJSON, anchorFile)
+			if err != nil {
+				return err
+			}
+			start, _ := cmd.Flags().GetInt("start")
+			end, _ := cmd.Flags().GetInt("end")
+			requestBody := map[string]any{
+				"path":      resolvedPath,
+				"thread_id": args[1],
+			}
+			if anchor != nil {
+				if cmd.Flags().Changed("start") || cmd.Flags().Changed("end") {
+					return fmt.Errorf("--start and --end cannot be combined with --anchor-json/--anchor-file")
+				}
+				requestBody["anchor"] = anchor
+			} else {
+				if !cmd.Flags().Changed("start") || !cmd.Flags().Changed("end") {
+					return fmt.Errorf("either --anchor-json/--anchor-file or both --start and --end are required")
+				}
+				requestBody["start"] = start
+				requestBody["end"] = end
+			}
+			var thread domain.Thread
+			if err := opts.client().doJSON(context.Background(), http.MethodPost, "/api/files/thread-reanchor", requestBody, &thread); err != nil {
+				return err
+			}
+			return printValue(cmd, opts.JSON, thread)
+		},
+	}
+	reanchor.Flags().String("anchor-json", "", "Anchor payload as JSON")
+	reanchor.Flags().String("anchor-file", "", "Path to a JSON file containing an anchor payload")
+	reanchor.Flags().Int("start", 0, "Selection start")
+	reanchor.Flags().Int("end", 0, "Selection end")
+	cmd.AddCommand(reanchor)
 	cmd.AddCommand(threadStatusCmd(opts, "resolve", "/api/files/thread-resolve"))
 	cmd.AddCommand(threadStatusCmd(opts, "reopen", "/api/files/thread-reopen"))
 	return cmd

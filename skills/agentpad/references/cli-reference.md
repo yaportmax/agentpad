@@ -90,6 +90,7 @@ Notes:
 - `read --anchor-only` is the fastest path when the next step is an edit or a thread creation.
 - `edit --anchor-json` and `edit --anchor-file` are the primary agent-facing edit inputs.
 - `edit --thread <thread-id>` is the preferred follow-up when you are addressing an existing comment, because AgentPad will move the thread highlight onto the replacement span.
+- `threads reanchor <file> <thread-id> ...` is the fallback path when a thread is already unresolved and the agent has chosen the correct current span.
 - `edit-many` is the preferred path for several disjoint localized edits. Prefer anchors or thread IDs inside batch edits when possible.
 - For multiline text, prefer `edit --text-file` over trying to pass `\n` through shell quoting.
 - The anchor carries the revision and quote context needed for AgentPad to resolve and rebase the edit safely.
@@ -166,6 +167,13 @@ Fetch one thread with full comments:
 agentpad threads get /absolute/path/to/file.md <thread-id> --json
 ```
 
+Re-anchor an unresolved thread after choosing a fresh span:
+
+```bash
+agentpad read /absolute/path/to/file.md --quote "replacement text" --prefix "Before " --suffix " after" --anchor-only --json > /tmp/anchor.json
+agentpad threads reanchor /absolute/path/to/file.md <thread-id> --anchor-file /tmp/anchor.json --json
+```
+
 Create a thread from an existing anchor:
 
 ```bash
@@ -178,6 +186,14 @@ Reply:
 agentpad threads reply /absolute/path/to/file.md <thread-id> --body "Handled in the latest draft." --json
 printf 'Handled in the latest draft.\n\nAdded detail in a second paragraph.' > /tmp/reply.txt
 agentpad threads reply /absolute/path/to/file.md <thread-id> --body-file /tmp/reply.txt --json
+```
+
+Re-anchor an unresolved thread after choosing a new target span:
+
+```bash
+agentpad threads get /absolute/path/to/file.md <thread-id> --json
+agentpad read /absolute/path/to/file.md --quote "Replacement text" --prefix "Before " --suffix " after" --anchor-only --json > /tmp/anchor.json
+agentpad threads reanchor /absolute/path/to/file.md <thread-id> --anchor-file /tmp/anchor.json --json
 ```
 
 Resolve:

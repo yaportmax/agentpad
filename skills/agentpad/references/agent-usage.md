@@ -43,7 +43,11 @@ Use AgentPad when the user wants collaboration on a local document:
    `agentpad edit /absolute/path/to/file.md --anchor-file /tmp/anchor.json --text "replacement text" --json`
 9. If you are addressing an existing thread, use a thread-aware edit instead:
    `agentpad edit /absolute/path/to/file.md --thread <thread-id> --text "replacement text" --json`
-10. Reply to or resolve threads after the document change, then share the deep link:
+10. If a thread becomes unresolved after an edit, inspect it and explicitly re-anchor it:
+   `agentpad threads get /absolute/path/to/file.md <thread-id> --json`
+   `agentpad read /absolute/path/to/file.md --quote "replacement text" --prefix "before " --suffix " after" --anchor-only --json > /tmp/anchor.json`
+   `agentpad threads reanchor /absolute/path/to/file.md <thread-id> --anchor-file /tmp/anchor.json --json`
+11. Reply to or resolve threads after the document change, then share the deep link:
    `agentpad open /absolute/path/to/file.md --json`
 
 ## Notes
@@ -53,6 +57,7 @@ Use AgentPad when the user wants collaboration on a local document:
 - `agentpad open --json` returns a lightweight summary by default. Add `--include-document` only when you truly need the full payload from AgentPad itself.
 - `agentpad read` omits block metadata by default. Add `--full` only when block metadata is worth the extra payload.
 - Prefer `threads list --summary` before `threads get`.
+- Use `threads reanchor` only after choosing a fresh current span; it is the fallback path when a thread can no longer resolve automatically.
 - When the user wants the browser UI, give them the deep link returned by `inspect` or `open --json`.
 - When passing text that includes command examples through the shell, avoid embedding backticked snippets inline in a quoted argument. Shells can treat backticks as command substitution and `<thread-id>`-style placeholders as redirection.
 - Prefer `--body-file`, `--text-file`, JSON edit files, or a quoted heredoc when the text you are sending includes command examples, backticks, angle brackets, or multiline content.

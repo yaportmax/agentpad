@@ -43,6 +43,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/files/thread", a.handleGetThread)
 	mux.HandleFunc("POST /api/files/threads", a.handleCreateThread)
 	mux.HandleFunc("POST /api/files/thread-replies", a.handleReplyThread)
+	mux.HandleFunc("POST /api/files/thread-reanchor", a.handleReanchorThread)
 	mux.HandleFunc("POST /api/files/thread-resolve", a.handleResolveThread)
 	mux.HandleFunc("POST /api/files/thread-reopen", a.handleReopenThread)
 	mux.HandleFunc("GET /api/files/activity", a.handleActivity)
@@ -248,6 +249,37 @@ func (a *App) handleReplyThread(w http.ResponseWriter, r *http.Request) {
 	}
 	a.hub.NotifyDocument(thread.DocumentID, "threads", map[string]any{"thread_id": thread.ID, "comment_id": comment.ID})
 	writeJSON(w, http.StatusCreated, map[string]any{"thread": thread, "comment": comment})
+}
+
+func (a *App) handleReanchorThread(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path     string         `json:"path"`
+		ThreadID string         `json:"thread_id"`
+		Start    int            `json:"start"`
+		End      int            `json:"end"`
+		Anchor   *domain.Anchor `json:"anchor"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, domain.NewError(domain.ErrCodeInvalidRequest, err.Error(), 400))
+		return
+	}
+	doc, err := a.store.GetDocument(r.Context(), req.Path, actorFromRequest(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	anchor, err := a.anchorFromRequest(doc, req.Start, req.End, req.Anchor)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	thread, err := a.store.ReanchorThread(r.Context(), req.Path, req.ThreadID, *anchor, actorFromRequest(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	a.hub.NotifyDocument(thread.DocumentID, "threads", map[string]any{"thread_id": thread.ID})
+	writeJSON(w, http.StatusOK, thread)
 }
 
 func (a *App) handleResolveThread(w http.ResponseWriter, r *http.Request) {

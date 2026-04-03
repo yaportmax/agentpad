@@ -520,6 +520,50 @@ func (s *Store) ReplyThread(ctx context.Context, documentID, threadID, body, act
 	return data.Threads[index], comment, nil
 }
 
+func (s *Store) ReanchorThread(ctx context.Context, documentID, threadID string, anchor domain.Anchor, actor string) (domain.Thread, error) {
+	_ = ctx
+	ref, err := s.resolveDocumentRef(documentID)
+	if err != nil {
+		return domain.Thread{}, err
+	}
+	unlock := s.lockDocument(ref.Key)
+	defer unlock()
+	doc, data, err := s.loadDocumentData(ref, actor, true)
+	if err != nil {
+		return domain.Thread{}, err
+	}
+	index := threadIndex(data.Threads, threadID)
+	if index < 0 {
+		return domain.Thread{}, domain.NewError(domain.ErrCodeDocumentNotFound, "thread not found", 404)
+	}
+	history, err := s.changesSinceUnlocked(ref, anchor.Revision)
+	if err != nil {
+		return domain.Thread{}, err
+	}
+	resolved, err := docmodel.ResolveAnchor(doc, anchor, history)
+	if err != nil {
+		return domain.Thread{}, err
+	}
+	now := time.Now().UTC()
+	data.Threads[index].DocumentID = ref.Path
+	data.Threads[index].Anchor = resolved
+	data.Threads[index].UpdatedAt = now
+	if err := s.writeSidecar(ref, data); err != nil {
+		return domain.Thread{}, err
+	}
+	if err := s.appendActivityLocked(ref, domain.ActivityEvent{
+		ID:         uuid.NewString(),
+		DocumentID: ref.Path,
+		Type:       "thread.reanchored",
+		Actor:      actor,
+		Payload:    map[string]any{"thread_id": threadID},
+		CreatedAt:  now,
+	}); err != nil {
+		return domain.Thread{}, err
+	}
+	return data.Threads[index], nil
+}
+
 func (s *Store) SetThreadStatus(ctx context.Context, documentID, threadID string, status domain.ThreadStatus, actor string) (domain.Thread, error) {
 	_ = ctx
 	ref, err := s.resolveDocumentRef(documentID)

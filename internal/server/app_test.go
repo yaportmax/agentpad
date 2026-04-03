@@ -295,6 +295,58 @@ func TestEditEndpointSupportsThreadAwareEdit(t *testing.T) {
 	}
 }
 
+func TestThreadReanchorEndpointReanchorsUnresolvedThread(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	docPath := filepath.Join(t.TempDir(), "doc.md")
+	if err := os.WriteFile(docPath, []byte("# Title\n\nHello world"), 0o644); err != nil {
+		t.Fatalf("write document: %v", err)
+	}
+	doc, err := st.OpenDocument(context.Background(), docPath, "tester")
+	if err != nil {
+		t.Fatalf("open document: %v", err)
+	}
+	anchor, err := docmodel.AnchorFromSelection(doc, 9, 14)
+	if err != nil {
+		t.Fatalf("anchor selection: %v", err)
+	}
+	thread, err := st.CreateThread(context.Background(), doc.ID, *anchor, "Keep this grounded", "tester")
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, _, err := st.ApplyAnchorEdit(context.Background(), doc.ID, *anchor, "Team", "tester"); err != nil {
+		t.Fatalf("apply anchor edit: %v", err)
+	}
+
+	app := New(st, "")
+	server := httptest.NewServer(app.Routes())
+	t.Cleanup(server.Close)
+
+	reanchorPayload := map[string]any{
+		"path":      doc.ID,
+		"thread_id": thread.ID,
+		"start":     9,
+		"end":       13,
+	}
+	resp, err := postJSON(server.URL+"/api/files/thread-reanchor", reanchorPayload)
+	if err != nil {
+		t.Fatalf("thread reanchor request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var result domain.Thread
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode thread reanchor response: %v", err)
+	}
+	if result.Anchor.Quote != "Team" || !result.Anchor.Resolved {
+		t.Fatalf("expected reanchored thread, got %+v", result.Anchor)
+	}
+}
+
 func postJSON(url string, payload any) (*http.Response, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {

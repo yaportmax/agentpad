@@ -358,6 +358,81 @@ func TestApplyThreadEditRetargetsThreadToReplacementText(t *testing.T) {
 	}
 }
 
+func TestReanchorThreadPersistsRecoveredAnchor(t *testing.T) {
+	ctx := context.Background()
+	st, _ := openTestStore(t)
+	docPath := writeTestDocument(t, t.TempDir(), "plan.md", "# Title\n\nHello world.\n")
+
+	doc, err := st.OpenDocument(ctx, docPath, "tester")
+	if err != nil {
+		t.Fatalf("open document: %v", err)
+	}
+	anchor, err := docmodel.AnchorFromSelection(doc, 15, 20)
+	if err != nil {
+		t.Fatalf("anchor selection: %v", err)
+	}
+	thread, err := st.CreateThread(ctx, doc.ID, *anchor, "Keep this grounded", "reviewer")
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, _, err := st.ApplyAnchorEdit(ctx, doc.ID, *anchor, "team", "editor"); err != nil {
+		t.Fatalf("apply anchor edit: %v", err)
+	}
+
+	updatedDoc, err := st.GetDocument(ctx, doc.ID, "tester")
+	if err != nil {
+		t.Fatalf("get updated document: %v", err)
+	}
+	reanchor, err := docmodel.AnchorFromSelection(updatedDoc, 15, 19)
+	if err != nil {
+		t.Fatalf("select replacement span: %v", err)
+	}
+
+	updatedThread, err := st.ReanchorThread(ctx, doc.ID, thread.ID, *reanchor, "editor")
+	if err != nil {
+		t.Fatalf("reanchor thread: %v", err)
+	}
+	if updatedThread.Anchor.Quote != "team" || !updatedThread.Anchor.Resolved {
+		t.Fatalf("expected reanchored thread to point at replacement, got %+v", updatedThread.Anchor)
+	}
+
+	refetched, err := st.GetThread(ctx, doc.ID, thread.ID, "tester")
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if refetched.Anchor.Quote != "team" || !refetched.Anchor.Resolved {
+		t.Fatalf("expected persisted reanchored thread, got %+v", refetched.Anchor)
+	}
+}
+
+func TestReanchorThreadRejectsInvalidReplacementAnchor(t *testing.T) {
+	ctx := context.Background()
+	st, _ := openTestStore(t)
+	docPath := writeTestDocument(t, t.TempDir(), "plan.md", "# Title\n\nHello world.\n")
+
+	doc, err := st.OpenDocument(ctx, docPath, "tester")
+	if err != nil {
+		t.Fatalf("open document: %v", err)
+	}
+	anchor, err := docmodel.AnchorFromSelection(doc, 15, 20)
+	if err != nil {
+		t.Fatalf("anchor selection: %v", err)
+	}
+	thread, err := st.CreateThread(ctx, doc.ID, *anchor, "Keep this grounded", "reviewer")
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if _, _, err := st.ApplyAnchorEdit(ctx, doc.ID, *anchor, "team", "editor"); err != nil {
+		t.Fatalf("apply anchor edit: %v", err)
+	}
+
+	if _, err := st.ReanchorThread(ctx, doc.ID, thread.ID, *anchor, "editor"); err == nil {
+		t.Fatalf("expected invalid reanchor error")
+	} else if appErr := domain.AsError(err); appErr.Code != domain.ErrCodeInvalidAnchor {
+		t.Fatalf("expected invalid anchor error, got %+v", appErr)
+	}
+}
+
 func TestBlockIDsStableAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	st, root := openTestStore(t)
