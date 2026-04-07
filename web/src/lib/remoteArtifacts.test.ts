@@ -26,6 +26,7 @@ describe("remoteArtifacts", () => {
     expect(artifacts).toEqual([
       {
         id: "remote-artifact-1",
+        groupId: "remote-artifact-group-1",
         kind: "insert",
         author: "pair",
         from: 5,
@@ -50,6 +51,7 @@ describe("remoteArtifacts", () => {
     expect(artifacts).toEqual([
       {
         id: "remote-artifact-1",
+        groupId: "remote-artifact-group-1",
         kind: "replace",
         author: "pair",
         from: 6,
@@ -57,6 +59,7 @@ describe("remoteArtifacts", () => {
       },
       {
         id: "remote-artifact-2",
+        groupId: "remote-artifact-group-1",
         kind: "delete",
         author: "pair",
         position: 10,
@@ -65,7 +68,7 @@ describe("remoteArtifacts", () => {
     ]);
   });
 
-  it("uses token-level replacement artifacts instead of whole-span highlights", () => {
+  it("collapses rewritten spans into one replace marker and one delete chip", () => {
     const source = "Alpha beta gamma.";
     const op: Operation = {
       position: 0,
@@ -81,15 +84,24 @@ describe("remoteArtifacts", () => {
     expect(artifacts).toEqual([
       {
         id: "remote-artifact-1",
-        kind: "insert",
+        groupId: "remote-artifact-group-1",
+        kind: "replace",
         author: "pair",
-        from: 6,
-        to: 12,
+        from: 0,
+        to: 23,
+      },
+      {
+        id: "remote-artifact-2",
+        groupId: "remote-artifact-group-1",
+        kind: "delete",
+        author: "pair",
+        position: 23,
+        text: "Alpha beta gamma.",
       },
     ]);
   });
 
-  it("anchors replacement artifacts at the changed token subsection", () => {
+  it("uses the full inserted replacement span when the op rewrites a larger range", () => {
     const source = "Second paragraph for replacement testing.";
     const op: Operation = {
       position: 0,
@@ -105,17 +117,19 @@ describe("remoteArtifacts", () => {
     expect(artifacts).toEqual([
       {
         id: "remote-artifact-1",
+        groupId: "remote-artifact-group-1",
         kind: "replace",
         author: "pair",
-        from: 21,
-        to: 25,
+        from: 0,
+        to: 34,
       },
       {
         id: "remote-artifact-2",
+        groupId: "remote-artifact-group-1",
         kind: "delete",
         author: "pair",
-        position: 25,
-        text: "replacement",
+        position: 34,
+        text: "Second paragraph for replacement testing.",
       },
     ]);
   });
@@ -136,6 +150,7 @@ describe("remoteArtifacts", () => {
     expect(artifacts).toEqual([
       {
         id: "remote-artifact-1",
+        groupId: "remote-artifact-group-1",
         kind: "delete",
         author: "pair",
         position: 6,
@@ -144,7 +159,33 @@ describe("remoteArtifacts", () => {
     ]);
   });
 
-  it("maps existing artifacts through later edits without expanding them to new boundary inserts", () => {
+  it("assigns a distinct group id to each remote operation", () => {
+    const source = "Alpha beta";
+    const firstOp: Operation = {
+      position: 5,
+      delete_count: 0,
+      insert_text: " brave",
+      base_revision: 0,
+      author: "pair",
+    };
+    const firstNext = applyOperation(source, firstOp);
+    const firstArtifacts = buildRemoteArtifactsForOperation(source, firstNext, firstOp);
+
+    const secondOp: Operation = {
+      position: 6,
+      delete_count: 4,
+      insert_text: "",
+      base_revision: 1,
+      author: "pair",
+    };
+    const secondNext = applyOperation(firstNext, secondOp);
+    const secondArtifacts = buildRemoteArtifactsForOperation(firstNext, secondNext, secondOp);
+
+    expect(firstArtifacts.map((artifact) => artifact.groupId)).toEqual(["remote-artifact-group-1"]);
+    expect(secondArtifacts.map((artifact) => artifact.groupId)).toEqual(["remote-artifact-group-2"]);
+  });
+
+  it("maps existing artifacts through later edits without changing their approval group", () => {
     const state = EditorState.create({ doc: "Alpha beta" });
     const transaction = state.update({
       changes: { from: 6, to: 6, insert: "remote " },
@@ -154,6 +195,7 @@ describe("remoteArtifacts", () => {
       [
         {
           id: "remote-artifact-1",
+          groupId: "remote-artifact-group-1",
           kind: "insert",
           author: "pair",
           from: 6,
@@ -161,6 +203,7 @@ describe("remoteArtifacts", () => {
         },
         {
           id: "remote-artifact-2",
+          groupId: "remote-artifact-group-1",
           kind: "delete",
           author: "pair",
           position: 6,
@@ -173,6 +216,7 @@ describe("remoteArtifacts", () => {
     expect(mapped).toEqual([
       {
         id: "remote-artifact-1",
+        groupId: "remote-artifact-group-1",
         kind: "insert",
         author: "pair",
         from: 13,
@@ -180,6 +224,7 @@ describe("remoteArtifacts", () => {
       },
       {
         id: "remote-artifact-2",
+        groupId: "remote-artifact-group-1",
         kind: "delete",
         author: "pair",
         position: 6,
@@ -198,6 +243,7 @@ describe("remoteArtifacts", () => {
       [
         {
           id: "remote-artifact-1",
+          groupId: "remote-artifact-group-1",
           kind: "insert",
           author: "pair",
           from: 6,
