@@ -18,7 +18,7 @@ import {
 const remoteAnnotation = Annotation.define<boolean>();
 const setThreadDecorations = StateEffect.define<DecorationSet>();
 const addRemoteArtifacts = StateEffect.define<RemoteArtifact[]>();
-const clearRemoteArtifact = StateEffect.define<string>();
+const clearRemoteArtifactGroup = StateEffect.define<string>();
 
 interface RemoteDecorationState {
   artifacts: RemoteArtifact[];
@@ -42,6 +42,7 @@ class DeletedTextWidget extends WidgetType {
     const wrapper = document.createElement("span");
     wrapper.className = "cm-remote-change cm-remote-change-delete";
     wrapper.dataset.remoteArtifactId = this.artifact.id;
+    wrapper.dataset.remoteArtifactGroupId = this.artifact.groupId;
     wrapper.dataset.remoteArtifactKind = this.artifact.kind;
     wrapper.title = formatDeletedArtifactTitle(this.artifact);
 
@@ -106,8 +107,8 @@ const remoteDecorationField = StateField.define<RemoteDecorationState>({
         artifacts = [...artifacts, ...effect.value];
         shouldRebuild = true;
       }
-      if (effect.is(clearRemoteArtifact)) {
-        const nextArtifacts = artifacts.filter((artifact) => artifact.id !== effect.value);
+      if (effect.is(clearRemoteArtifactGroup)) {
+        const nextArtifacts = artifacts.filter((artifact) => artifact.groupId !== effect.value);
         if (nextArtifacts.length !== artifacts.length) {
           artifacts = nextArtifacts;
           shouldRebuild = true;
@@ -231,6 +232,7 @@ function buildRemoteDecorations(artifacts: RemoteArtifact[]) {
         class: `cm-remote-change cm-remote-change-${artifact.kind}`,
         attributes: {
           "data-remote-artifact-id": artifact.id,
+          "data-remote-artifact-group-id": artifact.groupId,
           "data-remote-artifact-kind": artifact.kind,
           title: getRemoteArtifactTitle(artifact),
         },
@@ -351,11 +353,11 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
         }),
         EditorView.domEventHandlers({
           click(event, view) {
-            const remoteArtifactID = (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-remote-artifact-id]")
-              ?.dataset.remoteArtifactId;
-            if (remoteArtifactID) {
+            const remoteArtifactGroupID = (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-remote-artifact-group-id]")
+              ?.dataset.remoteArtifactGroupId;
+            if (remoteArtifactGroupID) {
               view.dispatch({
-                effects: clearRemoteArtifact.of(remoteArtifactID),
+                effects: clearRemoteArtifactGroup.of(remoteArtifactGroupID),
               });
               return true;
             }

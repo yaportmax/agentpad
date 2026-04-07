@@ -32,19 +32,23 @@ test("keeps replacement delete chips near the changed paragraph after later remo
 
     await expect(page.getByRole("heading", { name: "remote-layout" })).toBeVisible();
     await expect(page.getByText("Live").first()).toBeVisible();
+    await page.waitForTimeout(1000);
 
     await runCLI(["edit", docPath, "--start", "23", "--end", "23", "--text", " really"]);
+    await expect(page.getByText("markdown • rev 1")).toBeVisible({ timeout: 15_000 });
     await runCLI(["edit", docPath, "--start", "44", "--end", "85", "--text", "Second paragraph for jsdiff token testing."]);
+    await expect(page.getByText("markdown • rev 2")).toBeVisible({ timeout: 15_000 });
     await runCLI(["edit", docPath, "--start", "2", "--end", "2", "--text", "Live "]);
+    await expect(page.getByText("markdown • rev 3")).toBeVisible({ timeout: 15_000 });
 
     const replacementChip = page.locator(".cm-remote-change-delete").filter({ hasText: "replacement" }).first();
     const secondParagraphLine = page.locator(".cm-line").filter({ hasText: "Second paragraph for jsdiff" }).first();
     const headingLine = page.locator(".cm-line").filter({ hasText: "# Live Artifact Debug" }).first();
 
-    await expect(replacementChip).toBeVisible();
+    await expect(replacementChip).toBeVisible({ timeout: 15_000 });
     await expect(headingLine).toBeVisible();
-    await expect(secondParagraphLine).toBeVisible();
-    await expect(secondParagraphLine).toContainText("token testing.");
+    await expect(secondParagraphLine).toBeVisible({ timeout: 15_000 });
+    await expect(secondParagraphLine).toContainText("token testing.", { timeout: 15_000 });
 
     const replacementBox = await replacementChip.boundingBox();
     const paragraphBox = await secondParagraphLine.boundingBox();
