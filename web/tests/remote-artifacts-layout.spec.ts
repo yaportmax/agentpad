@@ -27,18 +27,27 @@ test("keeps replacement delete chips near the changed paragraph after later remo
     await fs.writeFile(docPath, "# Artifact Debug\n\nAlpha beta gamma.\n\nSecond paragraph for replacement testing.\n", "utf8");
 
     await page.goto("/");
-    await page.getByPlaceholder("/Users/you/Documents/note.md").fill(docPath);
-    await page.getByRole("button", { name: "Open file" }).click();
+    await page.getByLabel("Choose file").setInputFiles(docPath);
+    await page.getByRole("button", { name: "Import file" }).click();
 
     await expect(page.getByRole("heading", { name: "remote-layout" })).toBeVisible();
     await expect(page.getByText("Live").first()).toBeVisible();
     await page.waitForTimeout(1000);
 
-    await runCLI(["edit", docPath, "--start", "23", "--end", "23", "--text", " really"]);
+    const documentID = new URL(page.url()).pathname.replace(/^\/+/, "");
+
+    await runCLI(["edit", documentID, "--match", "gamma.", "--replace", "gamma really."]);
     await expect(page.getByText("markdown • rev 1")).toBeVisible({ timeout: 15_000 });
-    await runCLI(["edit", docPath, "--start", "44", "--end", "85", "--text", "Second paragraph for jsdiff token testing."]);
+    await runCLI([
+      "edit",
+      documentID,
+      "--match",
+      "Second paragraph for replacement testing.",
+      "--replace",
+      "Second paragraph for jsdiff token testing.",
+    ]);
     await expect(page.getByText("markdown • rev 2")).toBeVisible({ timeout: 15_000 });
-    await runCLI(["edit", docPath, "--start", "2", "--end", "2", "--text", "Live "]);
+    await runCLI(["edit", documentID, "--match", "Artifact Debug", "--replace", "Live Artifact Debug"]);
     await expect(page.getByText("markdown • rev 3")).toBeVisible({ timeout: 15_000 });
 
     const replacementChip = page.locator(".cm-remote-change-delete").filter({ hasText: "replacement" }).first();

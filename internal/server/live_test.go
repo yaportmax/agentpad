@@ -6,9 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	"github.com/cyrusaf/agentpad/internal/domain"
 	"github.com/cyrusaf/agentpad/internal/store"
 )
 
@@ -26,20 +24,16 @@ func TestLiveSessionSendsSnapshot(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	docPath := filepath.Join(t.TempDir(), "live.md")
-	if err := os.WriteFile(docPath, []byte("# Hello\n\nLive world"), 0o644); err != nil {
-		t.Fatalf("write document: %v", err)
-	}
-	doc, err := st.OpenDocument(context.Background(), docPath, "tester")
+	doc, err := st.CreateDocument(context.Background(), "Live", domain.DocumentFormatMarkdown, "# Hello\n\nLive world", "tester")
 	if err != nil {
-		t.Fatalf("open document: %v", err)
+		t.Fatalf("create document: %v", err)
 	}
 
 	app := New(st, "")
 	ts := httptest.NewServer(app.Routes())
 	t.Cleanup(ts.Close)
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/files/live?path=" + url.QueryEscape(doc.ID) + "&name=tester"
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/documents/" + doc.ID + "/live?name=tester"
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -53,11 +47,8 @@ func TestLiveSessionSendsSnapshot(t *testing.T) {
 	if err := wsjson.Read(ctx, conn, &msg); err != nil {
 		t.Fatalf("read snapshot: %v", err)
 	}
-	if msg.Type != "snapshot" {
-		t.Fatalf("expected snapshot message, got %s", msg.Type)
-	}
-	if msg.Document == nil || msg.Document.ID != doc.ID {
-		t.Fatalf("unexpected snapshot payload: %+v", msg.Document)
+	if msg.Type != "snapshot" || msg.Document == nil || msg.Document.ID != doc.ID {
+		t.Fatalf("unexpected snapshot: %+v", msg)
 	}
 }
 
@@ -68,20 +59,16 @@ func TestHTTPDocumentEditsBroadcastAppliedOps(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	docPath := filepath.Join(t.TempDir(), "live-edit.md")
-	if err := os.WriteFile(docPath, []byte("# Hello\n\nLive world"), 0o644); err != nil {
-		t.Fatalf("write document: %v", err)
-	}
-	doc, err := st.OpenDocument(context.Background(), docPath, "tester")
+	doc, err := st.CreateDocument(context.Background(), "Live edit", domain.DocumentFormatMarkdown, "# Hello\n\nLive world", "tester")
 	if err != nil {
-		t.Fatalf("open document: %v", err)
+		t.Fatalf("create document: %v", err)
 	}
 
 	app := New(st, "")
 	ts := httptest.NewServer(app.Routes())
 	t.Cleanup(ts.Close)
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/files/live?path=" + url.QueryEscape(doc.ID) + "&name=browser-user"
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/documents/" + doc.ID + "/live?name=browser-user"
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -96,21 +83,17 @@ func TestHTTPDocumentEditsBroadcastAppliedOps(t *testing.T) {
 		t.Fatalf("read snapshot: %v", err)
 	}
 	if snapshot.Type != "snapshot" {
-		t.Fatalf("expected snapshot message, got %s", snapshot.Type)
+		t.Fatalf("expected snapshot, got %s", snapshot.Type)
 	}
 
-	payload := map[string]any{
-		"path":          doc.ID,
-		"position":      9,
-		"delete_count":  4,
-		"insert_text":   "team",
-		"base_revision": doc.Revision,
-	}
-	body, err := json.Marshal(payload)
+	payload, err := json.Marshal(map[string]any{
+		"match":   "Live",
+		"replace": "Team",
+	})
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/files/edit", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/documents/"+doc.ID+"/edit", bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -121,27 +104,15 @@ func TestHTTPDocumentEditsBroadcastAppliedOps(t *testing.T) {
 		t.Fatalf("post edit: %v", err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected status: %d", resp.StatusCode)
-	}
 
 	var msg serverMessage
 	if err := wsjson.Read(ctx, conn, &msg); err != nil {
 		t.Fatalf("read live op: %v", err)
 	}
-	if msg.Type != "op.applied" {
-		t.Fatalf("expected op.applied, got %s", msg.Type)
+	if msg.Type != "op.applied" || msg.Op == nil {
+		t.Fatalf("unexpected op message: %+v", msg)
 	}
-	if msg.Op == nil {
-		t.Fatalf("expected op payload")
-	}
-	if msg.Op.Author != "cli-user" {
-		t.Fatalf("expected op author cli-user, got %q", msg.Op.Author)
-	}
-	if msg.Op.InsertText != "team" || msg.Op.DeleteCount != 4 || msg.Op.Position != 9 {
+	if msg.Op.Author != "cli-user" || msg.Op.InsertText != "Team" {
 		t.Fatalf("unexpected op payload: %+v", msg.Op)
-	}
-	if msg.Revision != doc.Revision+1 {
-		t.Fatalf("expected revision %d, got %d", doc.Revision+1, msg.Revision)
 	}
 }

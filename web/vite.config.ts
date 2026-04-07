@@ -2,6 +2,11 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
+  appType: "spa",
+  build: {
+    outDir: "../internal/webassets/dist",
+    emptyOutDir: true,
+  },
   plugins: [react()],
   server: {
     port: 5173,

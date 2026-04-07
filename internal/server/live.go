@@ -62,17 +62,17 @@ type docRoom struct {
 }
 
 type Hub struct {
-	store *store.Store
+	store store.Store
 	mu    sync.Mutex
 	rooms map[string]*docRoom
 }
 
-func NewHub(s *store.Store) *Hub {
+func NewHub(s store.Store) *Hub {
 	return &Hub{store: s, rooms: map[string]*docRoom{}}
 }
 
 func (h *Hub) HandleLive(w http.ResponseWriter, r *http.Request) {
-	documentID := r.URL.Query().Get("path")
+	documentID := r.PathValue("id")
 	name := r.URL.Query().Get("name")
 	if name == "" {
 		name = "browser-user"
