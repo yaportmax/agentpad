@@ -1,12 +1,12 @@
 package server
 
 import (
+	"io/fs"
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"github.com/cyrusaf/agentpad/internal/config"
 	"github.com/cyrusaf/agentpad/internal/store"
+	"github.com/cyrusaf/agentpad/internal/webassets"
 )
 
 func Run(cfg config.Config) error {
@@ -16,11 +16,11 @@ func Run(cfg config.Config) error {
 	}
 	defer st.Close()
 
-	staticDir := filepath.Join("web", "dist")
-	if _, err := os.Stat(staticDir); err != nil {
-		staticDir = ""
+	staticFS, err := fs.Sub(webassets.FS, "dist")
+	if err != nil {
+		return err
 	}
 
-	app := New(st, staticDir)
+	app := NewWithStaticFS(st, staticFS)
 	return http.ListenAndServe(cfg.Server.Address, app.Routes())
 }

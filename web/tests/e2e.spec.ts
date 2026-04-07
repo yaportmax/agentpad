@@ -19,16 +19,22 @@ async function runCLI(args: string[]) {
   return JSON.parse(stdout) as Record<string, unknown>;
 }
 
-test("opens a local file in the collaborative UI", async ({ page }) => {
+test("imports a local file in the collaborative UI", async ({ page }) => {
   const samplePath = path.resolve(repoRoot, "testdata", "sample.md");
 
   await page.goto("/");
-  await page.getByPlaceholder("/Users/you/Documents/note.md").fill(samplePath);
-  await page.getByRole("button", { name: "Open file" }).click();
+  await page.getByLabel("Choose file").setInputFiles(samplePath);
+  await page.getByRole("button", { name: "Import file" }).click();
 
   await expect(page.getByRole("heading", { name: "sample" })).toBeVisible();
   await expect(page.getByText("Live").first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Comments", exact: true })).toBeVisible();
+
+  const importedDocumentID = new URL(page.url()).pathname.replace(/^\/+/, "");
+  expect(importedDocumentID).toBeTruthy();
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "sample" })).toBeVisible();
 });
 
 test("updates thread state live when the CLI changes it", async ({ page }) => {
@@ -39,14 +45,20 @@ test("updates thread state live when the CLI changes it", async ({ page }) => {
     await fs.writeFile(docPath, "# Title\n\nAlpha beta gamma delta\n", "utf8");
 
     await page.goto("/");
-    await page.getByPlaceholder("/Users/you/Documents/note.md").fill(docPath);
-    await page.getByRole("button", { name: "Open file" }).click();
+    await page.getByLabel("Choose file").setInputFiles(docPath);
+    await page.getByRole("button", { name: "Import file" }).click();
 
     await expect(page.getByRole("heading", { name: "websocket-thread" })).toBeVisible();
     await expect(page.getByText("Live").first()).toBeVisible();
     await expect(page.getByText("No open comments")).toBeVisible();
 
-    const created = await runCLI(["threads", "create", docPath, "--start", "9", "--end", "19", "--body", "CLI comment"]);
+    const documentID = new URL(page.url()).pathname.replace(/^\/+/, "");
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "websocket-thread" })).toBeVisible();
+    await expect(page.getByText("No open comments")).toBeVisible();
+    expect(documentID).toBeTruthy();
+
+    const created = await runCLI(["threads", "create", documentID, "--match", "Alpha beta", "--body", "CLI comment"]);
     const threadId = String(created.id ?? "");
     const threadCard = page.locator("[data-thread-card]").first();
 
@@ -60,19 +72,17 @@ test("updates thread state live when the CLI changes it", async ({ page }) => {
     await expect(threadCard.locator(".thread-unread-badge")).toHaveCount(0);
     await expect(threadCard.getByText("CLI comment")).toBeVisible();
 
-    await runCLI(["threads", "reply", docPath, threadId, "--body", "CLI reply"]);
+    await runCLI(["threads", "reply", documentID, threadId, "--body", "CLI reply"]);
     await expect(threadCard.getByText("2 comments")).toBeVisible({ timeout: liveUpdateTimeout });
     await expect(threadCard.getByText("CLI reply")).toBeVisible({ timeout: liveUpdateTimeout });
     await expect(threadCard.locator(".thread-unread-badge")).toHaveCount(0);
 
-    await runCLI(["threads", "resolve", docPath, threadId]);
-    await expect(page.locator(".cm-thread-highlight")).toHaveCount(0, { timeout: liveUpdateTimeout });
+    await runCLI(["threads", "resolve", documentID, threadId]);
     await expect(threadCard.locator(".thread-state")).toHaveText("resolved", { timeout: liveUpdateTimeout });
     await expect(threadCard.getByRole("button", { name: "Reopen" })).toBeVisible({ timeout: liveUpdateTimeout });
     await expect(page.getByRole("tab", { name: /resolved/i })).toHaveAttribute("aria-selected", "true", { timeout: liveUpdateTimeout });
 
-    await runCLI(["threads", "reopen", docPath, threadId]);
-    await expect(page.locator(".cm-thread-highlight")).toHaveCount(1, { timeout: liveUpdateTimeout });
+    await runCLI(["threads", "reopen", documentID, threadId]);
     await expect(threadCard.locator(".thread-state")).toHaveText("open", { timeout: liveUpdateTimeout });
     await expect(threadCard.getByRole("button", { name: "Resolve" })).toBeVisible({ timeout: liveUpdateTimeout });
     await expect(page.getByRole("tab", { name: /open/i })).toHaveAttribute("aria-selected", "true", { timeout: liveUpdateTimeout });
@@ -81,7 +91,7 @@ test("updates thread state live when the CLI changes it", async ({ page }) => {
   }
 });
 
-test("shows remote editor highlights for CLI inserts and clears them on click", async ({ page }) => {
+test("shows remote editor highlights for CLI replacements and clears them on click", async ({ page }) => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentpad-remote-edit-"));
   const docPath = path.join(tempDir, "remote-edit.md");
 
@@ -89,20 +99,24 @@ test("shows remote editor highlights for CLI inserts and clears them on click", 
     await fs.writeFile(docPath, "# Title\n\nAlpha beta gamma delta\n", "utf8");
 
     await page.goto("/");
-    await page.getByPlaceholder("/Users/you/Documents/note.md").fill(docPath);
-    await page.getByRole("button", { name: "Open file" }).click();
+    await page.getByLabel("Choose file").setInputFiles(docPath);
+    await page.getByRole("button", { name: "Import file" }).click();
     await expect(page.getByRole("heading", { name: "remote-edit" })).toBeVisible();
     await expect(page.getByText("Live").first()).toBeVisible({ timeout: liveUpdateTimeout });
     await page.waitForTimeout(1000);
 
-    await runCLI(["edit", docPath, "--start", "31", "--end", "31", "--text", " together"]);
+    const documentID = new URL(page.url()).pathname.replace(/^\/+/, "");
+    await runCLI(["edit", documentID, "--match", "delta", "--replace", "delta together"]);
 
-    const remoteInsert = page.locator(".cm-remote-change-insert");
-    await expect(remoteInsert).toHaveCount(1, { timeout: liveUpdateTimeout });
-    await expect(remoteInsert.first()).toHaveAttribute("title", "Edited by cli-user", { timeout: liveUpdateTimeout });
+    const remoteReplace = page.locator(".cm-remote-change-replace");
+    const remoteDelete = page.locator(".cm-remote-change-delete");
+    await expect(remoteReplace).toHaveCount(1, { timeout: liveUpdateTimeout });
+    await expect(remoteDelete).toHaveCount(1, { timeout: liveUpdateTimeout });
+    await expect(remoteReplace.first()).toHaveAttribute("title", "Edited by cli-user", { timeout: liveUpdateTimeout });
 
-    await remoteInsert.first().click();
-    await expect(page.locator(".cm-remote-change-insert")).toHaveCount(0, { timeout: liveUpdateTimeout });
+    await remoteReplace.first().click();
+    await expect(page.locator(".cm-remote-change-replace")).toHaveCount(0, { timeout: liveUpdateTimeout });
+    await expect(page.locator(".cm-remote-change-delete")).toHaveCount(0, { timeout: liveUpdateTimeout });
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
@@ -116,13 +130,14 @@ test("shows remote editor highlights for CLI edits", async ({ page }) => {
     await fs.writeFile(docPath, "# Title\n\nAlpha beta gamma delta\n", "utf8");
 
     await page.goto("/");
-    await page.getByPlaceholder("/Users/you/Documents/note.md").fill(docPath);
-    await page.getByRole("button", { name: "Open file" }).click();
+    await page.getByLabel("Choose file").setInputFiles(docPath);
+    await page.getByRole("button", { name: "Import file" }).click();
     await expect(page.getByRole("heading", { name: "cli-edit" })).toBeVisible();
     await expect(page.getByText("Live").first()).toBeVisible({ timeout: liveUpdateTimeout });
     await page.waitForTimeout(1000);
 
-    await runCLI(["edit", docPath, "--start", "15", "--end", "19", "--text", "crew"]);
+    const documentID = new URL(page.url()).pathname.replace(/^\/+/, "");
+    await runCLI(["edit", documentID, "--match", "beta", "--replace", "crew"]);
 
     await expect(page.locator(".cm-remote-change-replace")).toHaveCount(1, { timeout: liveUpdateTimeout });
     await expect(page.locator(".cm-remote-change-delete")).toHaveCount(1, { timeout: liveUpdateTimeout });
@@ -136,7 +151,7 @@ test("shows remote editor highlights for CLI edits", async ({ page }) => {
     await expect(page.locator(".cm-remote-change-replace")).toHaveCount(0, { timeout: liveUpdateTimeout });
     await expect(page.locator(".cm-remote-change-delete")).toHaveCount(0, { timeout: liveUpdateTimeout });
 
-    await runCLI(["edit", docPath, "--start", "20", "--end", "25", "--text", "squad"]);
+    await runCLI(["edit", documentID, "--match", "gamma", "--replace", "squad"]);
 
     await expect(page.locator(".cm-remote-change-replace")).toHaveCount(1, { timeout: liveUpdateTimeout });
     await expect(page.locator(".cm-remote-change-delete")).toHaveCount(1, { timeout: liveUpdateTimeout });

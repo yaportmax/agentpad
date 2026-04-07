@@ -28,14 +28,18 @@ func ImportFile(path string) (Imported, error) {
 	if err != nil {
 		return Imported{}, err
 	}
-	ext := strings.ToLower(filepath.Ext(path))
-	title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	return ImportData(filepath.Base(path), data, path)
+}
+
+func ImportData(name string, data []byte, sourcePath string) (Imported, error) {
+	ext := strings.ToLower(filepath.Ext(name))
+	title := strings.TrimSuffix(filepath.Base(name), filepath.Ext(name))
 	source := normalizeNewlines(string(data))
 	switch ext {
 	case ".md", ".markdown":
-		return Imported{Title: title, Format: domain.DocumentFormatMarkdown, Source: source, SourcePath: path, SourceFormat: domain.DocumentFormatMarkdown}, nil
+		return Imported{Title: title, Format: domain.DocumentFormatMarkdown, Source: source, SourcePath: sourcePath, SourceFormat: domain.DocumentFormatMarkdown}, nil
 	case ".txt":
-		return Imported{Title: title, Format: domain.DocumentFormatText, Source: source, SourcePath: path, SourceFormat: domain.DocumentFormatText}, nil
+		return Imported{Title: title, Format: domain.DocumentFormatText, Source: source, SourcePath: sourcePath, SourceFormat: domain.DocumentFormatText}, nil
 	case ".html", ".htm":
 		md, err := htmltomarkdown.ConvertString(source)
 		if err != nil {
@@ -46,11 +50,11 @@ func ImportFile(path string) (Imported, error) {
 			Format:       domain.DocumentFormatMarkdown,
 			Source:       normalizeNewlines(md),
 			Warnings:     []string{"HTML was normalized into Markdown for collaborative editing."},
-			SourcePath:   path,
+			SourcePath:   sourcePath,
 			SourceFormat: domain.DocumentFormatHTML,
 		}, nil
 	default:
-		return Imported{Title: title, Format: domain.DocumentFormatCode, Source: source, SourcePath: path, SourceFormat: domain.DocumentFormatCode}, nil
+		return Imported{Title: title, Format: domain.DocumentFormatCode, Source: source, SourcePath: sourcePath, SourceFormat: domain.DocumentFormatCode}, nil
 	}
 }
 

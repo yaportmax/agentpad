@@ -1,5 +1,5 @@
 import { startTransition, useEffect, useEffectEvent, useRef, useState } from "react";
-import type { CSSProperties, ChangeEvent, DragEvent, FormEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, ChangeEvent, FormEvent, PointerEvent as ReactPointerEvent } from "react";
 
 import { EditorPane, type EditorPaneHandle } from "./components/EditorPane";
 import { api } from "./lib/api";
@@ -7,7 +7,7 @@ import { clearUnreadThreadState, diffUnreadThreadActivity } from "./lib/threadHi
 import type { Document, Presence, SelectionRange, Thread } from "./lib/types";
 
 interface RouteState {
-  path: string | null;
+  documentId: string | null;
   threadId: string | null;
 }
 
@@ -21,20 +21,17 @@ const MIN_EDITOR_WIDTH = 420;
 
 function readRoute(): RouteState {
   const url = new URL(window.location.href);
+  const documentId = url.pathname.replace(/^\/+|\/+$/g, "");
   return {
-    path: url.searchParams.get("path"),
+    documentId: documentId ? decodeURIComponent(documentId) : null,
     threadId: url.searchParams.get("thread"),
   };
 }
 
 function writeRoute(route: RouteState, mode: "push" | "replace" = "push") {
   const url = new URL(window.location.href);
-  if (route.path) {
-    url.searchParams.set("path", route.path);
-  } else {
-    url.searchParams.delete("path");
-  }
-  if (route.path && route.threadId) {
+  url.pathname = route.documentId ? `/${encodeURIComponent(route.documentId)}` : "/";
+  if (route.documentId && route.threadId) {
     url.searchParams.set("thread", route.threadId);
   } else {
     url.searchParams.delete("thread");
@@ -107,130 +104,6 @@ function getComposerStyle(selection: SelectionRange | null): CSSProperties | und
   return { left, top };
 }
 
-function pathFromURI(raw: string) {
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== "file:") {
-      return null;
-    }
-    const pathname = decodeURIComponent(url.pathname);
-    if (/^\/[A-Za-z]:[\\/]/.test(pathname)) {
-      return pathname.slice(1);
-    }
-    if (url.hostname && url.hostname !== "localhost") {
-      return `//${decodeURIComponent(url.hostname)}${pathname}`;
-    }
-    return pathname;
-  } catch {
-    return null;
-  }
-}
-
-function pathFromPlainText(raw: string) {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return null;
-  }
-  if (trimmed.startsWith("file://")) {
-    return pathFromURI(trimmed);
-  }
-  if (trimmed.startsWith("/") || /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith("\\\\")) {
-    return trimmed;
-  }
-  return null;
-}
-
-function pathFromDownloadURL(raw: string) {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return null;
-  }
-  const parts = trimmed.split(":");
-  if (parts.length < 3) {
-    return null;
-  }
-  return pathFromURI(parts.slice(2).join(":"));
-}
-
-function pathFromDroppedText(raw: string) {
-  const lines = raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("#"));
-
-  for (const line of lines) {
-    const candidate = pathFromDownloadURL(line) ?? pathFromPlainText(line) ?? pathFromURI(line);
-    if (candidate) {
-      return candidate;
-    }
-  }
-
-  return null;
-}
-
-const DROPPED_PATH_TEXT_TYPES = ["text/uri-list", "text/plain", "DownloadURL", "public.file-url", "text/x-moz-url"];
-
-type DroppedDataTransfer = Pick<DataTransfer, "files" | "getData" | "items">;
-
-function readDroppedString(item: DataTransferItem) {
-  return new Promise<string>((resolve) => {
-    item.getAsString((value) => resolve(value ?? ""));
-  });
-}
-
-async function readDroppedItemStrings(items: DataTransferItemList | null | undefined) {
-  if (!items) {
-    return [];
-  }
-  const matchingItems = Array.from(items).filter((item) => item.kind === "string" && DROPPED_PATH_TEXT_TYPES.includes(item.type));
-  return Promise.all(matchingItems.map((item) => readDroppedString(item)));
-}
-
-function getDroppedFileName(dataTransfer: Pick<DataTransfer, "files">) {
-  return dataTransfer.files?.[0]?.name?.trim() || null;
-}
-
-export async function extractDroppedPathFromDataTransfer(
-  dataTransfer: DroppedDataTransfer,
-) {
-  const file = dataTransfer.files?.[0] as (File & { path?: string }) | undefined;
-  if (file?.path) {
-    return file.path;
-  }
-
-  for (const type of DROPPED_PATH_TEXT_TYPES) {
-    const raw = dataTransfer.getData(type);
-    if (!raw) {
-      continue;
-    }
-    const parsed = pathFromDroppedText(raw);
-    if (parsed) {
-      return parsed;
-    }
-  }
-
-  const itemStrings = await readDroppedItemStrings(dataTransfer.items);
-  for (const raw of itemStrings) {
-    const parsed = pathFromDroppedText(raw);
-    if (parsed) {
-      return parsed;
-    }
-  }
-
-  return null;
-}
-
-function hasDroppedPathData(dataTransfer: DataTransfer | null) {
-  if (!dataTransfer) {
-    return false;
-  }
-  const types = Array.from(dataTransfer.types ?? []);
-  const hasMatchingItems = Array.from(dataTransfer.items ?? []).some(
-    (item) => item.kind === "file" || (item.kind === "string" && DROPPED_PATH_TEXT_TYPES.includes(item.type)),
-  );
-  return dataTransfer.files.length > 0 || hasMatchingItems || DROPPED_PATH_TEXT_TYPES.some((type) => types.includes(type));
-}
-
 function clampNumber(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
@@ -258,26 +131,27 @@ function readStoredCommentsWidth() {
 export default function App() {
   const [route, setRoute] = useState<RouteState>(() => readRoute());
   const [actor, setActor] = useState(localStorage.getItem("agentpad.actor") ?? "browser-user");
-  const [openPath, setOpenPath] = useState(() => readRoute().path ?? "");
   const [currentDoc, setCurrentDoc] = useState<Document | null>(null);
   const [selection, setSelection] = useState<SelectionRange | null>(null);
   const [presence, setPresence] = useState<Presence[]>([]);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [unreadThreadIds, setUnreadThreadIds] = useState<Set<string>>(() => new Set());
   const [unreadCommentIds, setUnreadCommentIds] = useState<Set<string>>(() => new Set());
-  const [status, setStatus] = useState("Open a local file to begin.");
+  const [status, setStatus] = useState("Create or import a document to begin.");
   const [commentBody, setCommentBody] = useState("");
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
-  const [dropActive, setDropActive] = useState(false);
   const [commentsWidth, setCommentsWidth] = useState(() => readStoredCommentsWidth());
   const [commentsCollapsed, setCommentsCollapsed] = useState(false);
   const [commentsView, setCommentsView] = useState<CommentsView>("open");
+  const [createTitle, setCreateTitle] = useState("");
+  const [createSource, setCreateSource] = useState("");
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [isDocumentActionPending, setIsDocumentActionPending] = useState(false);
   const editorRef = useRef<EditorPaneHandle | null>(null);
-  const dropInputRef = useRef<HTMLInputElement | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const lastFocusedThreadRef = useRef<string | null>(null);
   const previousThreadsRef = useRef<Thread[]>([]);
   const threadRefreshTimeoutRef = useRef<number | null>(null);
-  const dragDepthRef = useRef(0);
   const resizeStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const activeThreadId = route.threadId;
   const openThreads = threads.filter((thread) => thread.status === "open").sort(sortThreadsByUpdatedAt);
@@ -301,11 +175,22 @@ export default function App() {
   const navigateTo = useEffectEvent((nextRoute: RouteState, mode: "push" | "replace" = "push") => {
     writeRoute(nextRoute, mode);
     setRoute(nextRoute);
-    setOpenPath(nextRoute.path ?? "");
   });
 
-  const refreshThreads = useEffectEvent(async (path: string, mode: "load" | "local" | "live" = "local") => {
-    const nextThreads = await api.listThreads(path);
+  const presentDocument = useEffectEvent((document: Document, nextStatus: string) => {
+    startTransition(() => {
+      setCurrentDoc(document);
+      setPresence([]);
+      setThreads([]);
+      setSelection(null);
+      setCommentBody("");
+      setReplyDrafts({});
+      setStatus(nextStatus);
+    });
+  });
+
+  const refreshThreads = useEffectEvent(async (documentID: string, mode: "load" | "local" | "live" = "local") => {
+    const nextThreads = await api.listThreads(documentID);
     const previousThreads = previousThreadsRef.current;
     previousThreadsRef.current = nextThreads ?? [];
     const unreadDiff =
@@ -354,17 +239,16 @@ export default function App() {
     }
   });
 
-  const loadDocument = useEffectEvent(async (path: string) => {
-    const doc = await api.openFile(path);
-    startTransition(() => {
-      setCurrentDoc(doc);
-      setSelection(null);
-      setCommentBody("");
-      setReplyDrafts({});
-      setOpenPath(doc.id);
-      setStatus(`Opened ${doc.title}`);
-    });
-    await refreshThreads(doc.id, "load");
+  const loadDocument = useEffectEvent(async (documentID: string) => {
+    const document = await api.getDocument(documentID);
+    presentDocument(document, `Opened ${document.title}`);
+    await refreshThreads(document.id, "load");
+  });
+
+  const openDocument = useEffectEvent(async (document: Document, nextStatus: string, mode: "push" | "replace" = "push") => {
+    navigateTo({ documentId: document.id, threadId: null }, mode);
+    presentDocument(document, nextStatus);
+    await refreshThreads(document.id, "load");
   });
 
   const handleDocumentArtifactHint = useEffectEvent(() => {
@@ -392,14 +276,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(COMMENTS_WIDTH_STORAGE_KEY, String(commentsWidth));
   }, [commentsWidth]);
-
-  useEffect(() => {
-    if (!dropActive || !dropInputRef.current) {
-      return;
-    }
-    dropInputRef.current.value = "";
-    dropInputRef.current.focus();
-  }, [dropActive]);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -463,7 +339,7 @@ export default function App() {
     setUnreadThreadIds(new Set());
     setUnreadCommentIds(new Set());
     setCommentsView("open");
-  }, [route.path]);
+  }, [route.documentId]);
 
   useEffect(() => {
     if (!activeThread) {
@@ -474,8 +350,8 @@ export default function App() {
   }, [activeThread]);
 
   useEffect(() => {
-    const path = route.path;
-    if (!path) {
+    const documentID = route.documentId;
+    if (!documentID) {
       startTransition(() => {
         setCurrentDoc(null);
         setSelection(null);
@@ -485,11 +361,11 @@ export default function App() {
         setUnreadCommentIds(new Set());
         setCommentBody("");
         setReplyDrafts({});
-        setStatus("Open a local file to begin.");
+        setStatus("Create or import a document to begin.");
       });
       return;
     }
-    if (currentDoc?.id === path) {
+    if (currentDoc?.id === documentID) {
       return;
     }
     startTransition(() => {
@@ -504,14 +380,14 @@ export default function App() {
     });
     void (async () => {
       try {
-        await loadDocument(path);
+        await loadDocument(documentID);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Unable to open that file.";
+        const message = error instanceof Error ? error.message : "Unable to open that document.";
         setStatus(message);
-        navigateTo({ path: null, threadId: null }, "replace");
+        navigateTo({ documentId: null, threadId: null }, "replace");
       }
     })();
-  }, [route.path, currentDoc?.id]);
+  }, [route.documentId, currentDoc?.id]);
 
   useEffect(() => {
     if (!activeThreadId) {
@@ -545,31 +421,56 @@ export default function App() {
     lastFocusedThreadRef.current = activeThreadId;
   }, [activeThreadId, threads]);
 
-  async function submitOpenPath() {
-    if (!openPath.trim()) {
-      setStatus("Enter an absolute file path.");
+  async function handleCreateSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsDocumentActionPending(true);
+    try {
+      const document = await api.createDocument({
+        title: createTitle.trim() || "Untitled",
+        source: createSource,
+        format: "markdown",
+      });
+      setCreateTitle("");
+      setCreateSource("");
+      setImportFile(null);
+      if (importInputRef.current) {
+        importInputRef.current.value = "";
+      }
+      await openDocument(document, `Created ${document.title}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not create the document.");
+    } finally {
+      setIsDocumentActionPending(false);
+    }
+  }
+
+  function handleImportFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    setImportFile(file);
+    if (file) {
+      setStatus(`Ready to import ${file.name}`);
+    }
+  }
+
+  async function handleImportSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!importFile) {
+      setStatus("Choose a file to import.");
       return;
     }
-    navigateTo({ path: openPath.trim(), threadId: null });
-  }
-
-  function openDroppedPath(nextPath: string) {
-    setOpenPath(nextPath);
-    navigateTo({ path: nextPath, threadId: null });
-  }
-
-  function setDropFailureStatus(dataTransfer: Pick<DataTransfer, "files">) {
-    const droppedFileName = getDroppedFileName(dataTransfer);
-    setStatus(
-      droppedFileName
-        ? `Dropped ${droppedFileName}, but this browser did not expose its absolute path. Paste the full path instead.`
-        : "Could not read a file path from that drop. Paste the absolute path instead.",
-    );
-  }
-
-  function handleOpenSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    void submitOpenPath();
+    setIsDocumentActionPending(true);
+    try {
+      const document = await api.importDocument(importFile);
+      setImportFile(null);
+      if (importInputRef.current) {
+        importInputRef.current.value = "";
+      }
+      await openDocument(document, `Imported ${document.title}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not import that file.");
+    } finally {
+      setIsDocumentActionPending(false);
+    }
   }
 
   async function createThread() {
@@ -590,7 +491,7 @@ export default function App() {
     setSelection(null);
     editorRef.current?.clearSelection();
     await refreshThreads(currentDoc.id, "local");
-    navigateTo({ path: currentDoc.id, threadId: created.id }, "replace");
+    navigateTo({ documentId: currentDoc.id, threadId: created.id }, "replace");
     setStatus("Comment added");
   }
 
@@ -638,7 +539,7 @@ export default function App() {
     }
     clearThreadUnread(threadID, threads);
     setCommentsCollapsed(false);
-    navigateTo({ path: currentDoc.id, threadId: threadID }, "replace");
+    navigateTo({ documentId: currentDoc.id, threadId: threadID }, "replace");
   }
 
   function showCommentsView(nextView: CommentsView) {
@@ -647,13 +548,13 @@ export default function App() {
       return;
     }
     if (activeThread && activeThread.status !== nextView) {
-      navigateTo({ path: currentDoc.id, threadId: null }, "replace");
+      navigateTo({ documentId: currentDoc.id, threadId: null }, "replace");
     }
     setCommentsView(nextView);
   }
 
   function clearRoute() {
-    navigateTo({ path: null, threadId: null });
+    navigateTo({ documentId: null, threadId: null });
   }
 
   function startCommentsResize(event: ReactPointerEvent<HTMLDivElement>) {
@@ -668,98 +569,12 @@ export default function App() {
     document.body.classList.add("is-resizing-comments");
   }
 
-  function handleDropTargetDragEnter(event: DragEvent<HTMLElement>) {
-    if (!hasDroppedPathData(event.dataTransfer)) {
-      return;
-    }
-    event.preventDefault();
-    dragDepthRef.current += 1;
-    setDropActive(true);
-  }
-
-  function handleDropTargetDragOver(event: DragEvent<HTMLElement>) {
-    if (!hasDroppedPathData(event.dataTransfer)) {
-      return;
-    }
-    event.preventDefault();
-    if (!dropActive) {
-      setDropActive(true);
-    }
-  }
-
-  function handleDropTargetDragLeave(event: DragEvent<HTMLElement>) {
-    if (!hasDroppedPathData(event.dataTransfer)) {
-      return;
-    }
-    event.preventDefault();
-    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-    if (dragDepthRef.current === 0) {
-      setDropActive(false);
-    }
-  }
-
-  function handleDropOverlayInputChange(event: ChangeEvent<HTMLInputElement>) {
-    const nextPath = pathFromDroppedText(event.target.value);
-    if (!nextPath) {
-      return;
-    }
-    event.target.value = "";
-    dragDepthRef.current = 0;
-    setDropActive(false);
-    openDroppedPath(nextPath);
-  }
-
-  function handleDropOverlayInputDrop(event: DragEvent<HTMLInputElement>) {
-    event.stopPropagation();
-    const target = event.currentTarget;
-    const dataTransfer = event.dataTransfer;
-    window.requestAnimationFrame(() => {
-      const insertedPath = pathFromDroppedText(target.value);
-      target.value = "";
-      if (insertedPath) {
-        dragDepthRef.current = 0;
-        setDropActive(false);
-        openDroppedPath(insertedPath);
-        return;
-      }
-      void (async () => {
-        const nextPath = await extractDroppedPathFromDataTransfer(dataTransfer);
-        if (!nextPath) {
-          dragDepthRef.current = 0;
-          setDropActive(false);
-          setDropFailureStatus(dataTransfer);
-          return;
-        }
-        dragDepthRef.current = 0;
-        setDropActive(false);
-        openDroppedPath(nextPath);
-      })();
-    });
-  }
-
-  if (!route.path) {
+  if (!route.documentId) {
     return (
-      <div
-        className={`page-shell page-shell-home ${dropActive ? "page-shell-drop-active" : ""}`}
-        onDragEnter={handleDropTargetDragEnter}
-        onDragOver={handleDropTargetDragOver}
-        onDragLeave={handleDropTargetDragLeave}
-      >
-        {dropActive ? (
-          <div className="page-drop-overlay">
-            <input
-              ref={dropInputRef}
-              className="page-drop-overlay-input"
-              aria-label="Drop a file path"
-              placeholder="Drop the file directly on this textbox to open its absolute path"
-              onChange={handleDropOverlayInputChange}
-              onDrop={handleDropOverlayInputDrop}
-            />
-          </div>
-        ) : null}
+      <div className="page-shell page-shell-home">
         <header className="page-header">
           <div>
-            <p className="eyebrow">Server-backed local files</p>
+            <p className="eyebrow">Document IDs</p>
             <h1>AgentPad</h1>
             <p className="page-subtitle">{status}</p>
           </div>
@@ -773,30 +588,77 @@ export default function App() {
           <section className="panel">
             <div className="panel-header">
               <div>
-                <p className="eyebrow">Open</p>
-                <h2>Local file</h2>
+                <p className="eyebrow">Create</p>
+                <h2>New document</h2>
               </div>
             </div>
 
-            <form className={`drop-zone open-surface ${dropActive ? "drop-zone-active" : ""}`} onSubmit={handleOpenSubmit}>
+            <form className="form-grid" onSubmit={handleCreateSubmit}>
               <div className="open-surface-copy">
-                <h3>Drop a file directly on the textbox or paste a path</h3>
-                <p>AgentPad edits the original file and keeps collaboration metadata in `~/.agentpad`.</p>
+                <h3>Start a fresh doc and share it by URL</h3>
+                <p>
+                  AgentPad now routes documents by ID, so every doc opens at its own <code>/{`<id>`}</code> URL with optional thread deep links.
+                </p>
               </div>
 
-              <label className="stacked-field open-surface-field">
-                <span>Absolute path</span>
-                <div className="open-surface-controls">
-                  <input
-                    value={openPath}
-                    onChange={(event) => setOpenPath(event.target.value)}
-                    placeholder="Drop a file on this textbox or paste /Users/you/Documents/note.md"
-                  />
-                  <button className="button" type="submit">
-                    Open file
-                  </button>
-                </div>
+              <label className="stacked-field">
+                <span>Title</span>
+                <input
+                  value={createTitle}
+                  onChange={(event) => setCreateTitle(event.target.value)}
+                  placeholder="Weekly notes"
+                />
               </label>
+
+              <label className="stacked-field">
+                <span>Starting content</span>
+                <textarea
+                  rows={10}
+                  value={createSource}
+                  onChange={(event) => setCreateSource(event.target.value)}
+                  placeholder="# Weekly notes&#10;&#10;Start writing here..."
+                />
+              </label>
+
+              <div className="panel-actions">
+                <button className="button" type="submit" disabled={isDocumentActionPending}>
+                  Create document
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Import</p>
+                <h2>Bring in an existing file</h2>
+              </div>
+            </div>
+
+            <form className="form-grid" onSubmit={handleImportSubmit}>
+              <div className="open-surface-copy">
+                <h3>Upload markdown or plain text</h3>
+                <p>The backend imports the file into a document record, then AgentPad opens the new document ID route.</p>
+              </div>
+
+              <label className="stacked-field">
+                <span>Choose file</span>
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept=".md,.markdown,.txt,text/markdown,text/plain"
+                  onChange={handleImportFileChange}
+                />
+              </label>
+
+              <p className="page-subtitle">{importFile ? `Selected ${importFile.name}` : "No file selected yet."}</p>
+
+              <div className="panel-actions">
+                <button className="button secondary" type="submit" disabled={!importFile || isDocumentActionPending}>
+                  Import file
+                </button>
+              </div>
             </form>
           </section>
         </main>
@@ -810,33 +672,16 @@ export default function App() {
   const commentsToggleLabel = commentsCollapsed ? `Show comments (${visibleThreads.length})` : "Hide comments";
 
   return (
-    <div
-      className={`page-shell page-shell-doc ${dropActive ? "page-shell-drop-active" : ""}`}
-      onDragEnter={handleDropTargetDragEnter}
-      onDragOver={handleDropTargetDragOver}
-      onDragLeave={handleDropTargetDragLeave}
-    >
-      {dropActive ? (
-        <div className="page-drop-overlay">
-          <input
-            ref={dropInputRef}
-            className="page-drop-overlay-input"
-            aria-label="Drop a file path"
-            placeholder="Drop the file directly on this textbox to open its absolute path"
-            onChange={handleDropOverlayInputChange}
-            onDrop={handleDropOverlayInputDrop}
-          />
-        </div>
-      ) : null}
+    <div className="page-shell page-shell-doc">
       <header className="doc-header">
         <div className="doc-header-main">
           <button className="button secondary" onClick={clearRoute}>
-            Open
+            Home
           </button>
           <div className="doc-header-copy">
             <div className="doc-title-row">
-              <p className="eyebrow">File</p>
-              <h1>{currentDoc?.title ?? "Loading file..."}</h1>
+              <p className="eyebrow">Document</p>
+              <h1>{currentDoc?.title ?? "Loading document..."}</h1>
             </div>
             <div className="doc-meta-row">
               <span>{status}</span>

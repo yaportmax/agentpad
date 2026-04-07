@@ -306,6 +306,9 @@ p {
 }
 
 .docs-page {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
   width: min(100%, 960px);
   margin: 0 auto;
   padding: 1.25rem;

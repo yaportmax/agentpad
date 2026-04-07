@@ -10,14 +10,14 @@ vi.mock("./components/EditorPane", () => ({
   },
 }));
 
-import App, { extractDroppedPathFromDataTransfer } from "./App";
+import App from "./App";
 import type { Thread } from "./lib/types";
 
-const filePath = "/Users/tester/spec.md";
+const documentId = "doc-123";
 const mockDocument = {
-  id: filePath,
-  title: "spec",
-  format: "markdown",
+  id: documentId,
+  title: "Spec",
+  format: "markdown" as const,
   source: "# Title\n\nHello world",
   revision: 0,
   blocks: [],
@@ -25,10 +25,17 @@ const mockDocument = {
   updated_at: new Date().toISOString(),
 };
 
+function jsonResponse(payload: unknown) {
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
     id: overrides.id ?? "thread-1",
-    document_id: overrides.document_id ?? filePath,
+    document_id: overrides.document_id ?? documentId,
     anchor: overrides.anchor ?? {
       block_id: "block-1",
       start: 0,
@@ -60,25 +67,23 @@ describe("App", () => {
     editorPaneMock.mockClear();
     HTMLElement.prototype.scrollIntoView = vi.fn();
     window.history.replaceState({}, "", "/");
-    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = input.toString();
-      if (url.includes("/api/files/open")) {
-        return new Response(JSON.stringify(mockDocument), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/api/documents") && method === "POST") {
+        return jsonResponse(mockDocument);
       }
-      if (url.includes("/api/files/threads")) {
-        return new Response("[]", {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      if (url.endsWith("/api/documents/import") && method === "POST") {
+        return jsonResponse(mockDocument);
       }
-      if (url.includes("/api/files/activity")) {
-        return new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      if (url.endsWith(`/api/documents/${documentId}`)) {
+        return jsonResponse(mockDocument);
+      }
+      if (url.endsWith(`/api/documents/${documentId}/threads`)) {
+        return jsonResponse([]);
+      }
+      if (url.endsWith(`/api/documents/${documentId}/activity`)) {
+        return jsonResponse([]);
       }
       return new Response(JSON.stringify({ message: "Not found" }), {
         status: 404,
@@ -87,45 +92,54 @@ describe("App", () => {
     }) as typeof fetch;
   });
 
-  it("opens a document from the landing page", async () => {
+  it("creates a document from the landing page and navigates to its id route", async () => {
     render(<App />);
 
-    fireEvent.change(screen.getByPlaceholderText(/users\/you\/documents/i), {
-      target: { value: filePath },
+    fireEvent.change(screen.getByLabelText(/^title$/i), {
+      target: { value: "Spec" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /open file/i }));
+    fireEvent.change(screen.getByLabelText(/starting content/i), {
+      target: { value: "# Title\n\nHello world" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /create document/i }));
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Comments" })).toBeTruthy());
+    expect(window.location.pathname).toBe(`/${documentId}`);
     expect(screen.getByTestId("editor-pane")).toBeTruthy();
   });
 
-  it("extracts a file path from a comment-prefixed uri list", async () => {
-    const path = await extractDroppedPathFromDataTransfer({
-      files: [] as unknown as FileList,
-      getData: (type: string) => (type === "text/uri-list" ? "# Finder selection\r\nfile:///Users/tester/spec.md\r\n" : ""),
-    });
+  it("imports a file from the landing page", async () => {
+    render(<App />);
 
-    expect(path).toBe("/Users/tester/spec.md");
+    const file = new File(["# Imported"], "notes.md", { type: "text/markdown" });
+    fireEvent.change(screen.getByLabelText(/choose file/i), {
+      target: { files: [file] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /import file/i }));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Comments" })).toBeTruthy());
+    expect(window.location.pathname).toBe(`/${documentId}`);
+
+    const importCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([input, init]) => input.toString().endsWith("/api/documents/import") && (init?.method ?? "GET") === "POST",
+    );
+    expect(importCall).toBeTruthy();
+    expect(importCall?.[1]?.body).toBeInstanceOf(FormData);
   });
 
-  it("extracts a file path from browser-specific drop formats", async () => {
-    const path = await extractDroppedPathFromDataTransfer({
-      files: [] as unknown as FileList,
-      getData: (type: string) => {
-        if (type === "DownloadURL") {
-          return "text/markdown:spec.md:file:///Users/tester/spec.md";
-        }
-        if (type === "text/x-moz-url") {
-          return "file:///Users/tester/ignored.md\nignored.md";
-        }
-        return "";
-      },
-    });
+  it("loads a document from the pathname and reads the thread query", async () => {
+    window.history.replaceState({}, "", `/${documentId}?thread=thread-1`);
 
-    expect(path).toBe("/Users/tester/spec.md");
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Comments" })).toBeTruthy());
+    await waitFor(() => {
+      const props = editorPaneMock.mock.calls.at(-1)?.[0] as { activeThreadId: string | null } | undefined;
+      expect(props?.activeThreadId).toBe("thread-1");
+    });
   });
 
-  it("shows open threads by default and lets you switch to resolved threads", async () => {
+  it("shows open threads by default, switches views, and writes thread deep links", async () => {
     const threads = [
       makeThread({
         id: "thread-open",
@@ -168,23 +182,11 @@ describe("App", () => {
 
     global.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString();
-      if (url.includes("/api/files/open")) {
-        return new Response(JSON.stringify(mockDocument), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      if (url.endsWith(`/api/documents/${documentId}`)) {
+        return jsonResponse(mockDocument);
       }
-      if (url.includes("/api/files/threads")) {
-        return new Response(JSON.stringify(threads), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      if (url.includes("/api/files/activity")) {
-        return new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+      if (url.endsWith(`/api/documents/${documentId}/threads`)) {
+        return jsonResponse(threads);
       }
       return new Response(JSON.stringify({ message: "Not found" }), {
         status: 404,
@@ -192,12 +194,8 @@ describe("App", () => {
       });
     }) as typeof fetch;
 
+    window.history.replaceState({}, "", `/${documentId}`);
     render(<App />);
-
-    fireEvent.change(screen.getByPlaceholderText(/users\/you\/documents/i), {
-      target: { value: filePath },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /open file/i }));
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Comments" })).toBeTruthy());
     await waitFor(() => expect(screen.getByText("Open quote")).toBeTruthy());
@@ -222,5 +220,7 @@ describe("App", () => {
       const props = editorPaneMock.mock.calls.at(-1)?.[0] as { threads: Thread[] } | undefined;
       expect(props?.threads.map((thread) => thread.id)).toEqual(["thread-resolved"]);
     });
+    expect(window.location.pathname).toBe(`/${documentId}`);
+    expect(new URLSearchParams(window.location.search).get("thread")).toBe("thread-resolved");
   });
 });

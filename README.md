@@ -72,7 +72,9 @@ For agent-driven edits, the preferred flow is:
 
 1. `agentpad read ... --json` to get a reusable `anchor`
 2. `agentpad edit ... --anchor-json/--anchor-file --text ...` to apply the edit through AgentPad's collab engine
-3. For multiline text, use `--text-file` or `--body-file` instead of shell-escaped `\n`
+3. If the edit is explicitly addressing an existing comment, use `agentpad edit --thread <thread-id> ...` so the thread follows the replacement text
+4. If a thread is already unresolved, use `agentpad threads reanchor <file> <thread-id> --anchor-file ...` or `--start/--end` after choosing the new span
+5. For multiline text, use `--text-file` or `--body-file` instead of shell-escaped `\n`
 
 Low-level `edit --start/--end --base-revision ...` still exists, but anchor-first editing is the safer default for concurrent human + agent work.
 

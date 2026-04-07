@@ -1,12 +1,14 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"io/fs"
 	"mime"
 	"net/http"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -20,35 +22,47 @@ import (
 )
 
 type App struct {
-	store     *store.Store
+	store     store.Store
 	hub       *Hub
 	staticDir string
+	staticFS  fs.FS
 }
 
-func New(store *store.Store, staticDir string) *App {
+func New(st store.Store, staticDir string) *App {
 	return &App{
-		store:     store,
-		hub:       NewHub(store),
+		store:     st,
+		hub:       NewHub(st),
 		staticDir: staticDir,
 	}
+}
+
+func NewWithStaticFS(st store.Store, staticFS fs.FS) *App {
+	app := New(st, "")
+	app.staticFS = staticFS
+	return app
 }
 
 func (a *App) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", a.handleHealth)
-	mux.HandleFunc("GET /api/files/open", a.handleOpenFile)
-	mux.HandleFunc("GET /api/files/read", a.handleReadFile)
-	mux.HandleFunc("POST /api/files/edit", a.handleEditFile)
-	mux.HandleFunc("GET /api/files/threads", a.handleListThreads)
-	mux.HandleFunc("GET /api/files/thread", a.handleGetThread)
-	mux.HandleFunc("POST /api/files/threads", a.handleCreateThread)
-	mux.HandleFunc("POST /api/files/thread-replies", a.handleReplyThread)
-	mux.HandleFunc("POST /api/files/thread-reanchor", a.handleReanchorThread)
-	mux.HandleFunc("POST /api/files/thread-resolve", a.handleResolveThread)
-	mux.HandleFunc("POST /api/files/thread-reopen", a.handleReopenThread)
-	mux.HandleFunc("GET /api/files/activity", a.handleActivity)
-	mux.HandleFunc("GET /api/files/export", a.handleExportFile)
-	mux.HandleFunc("GET /api/files/live", a.hub.HandleLive)
+	mux.HandleFunc("POST /api/documents/import", a.handleImportDocument)
+	mux.HandleFunc("POST /api/documents", a.handleCreateDocument)
+	mux.HandleFunc("GET /api/documents/{id}", a.handleGetDocument)
+	mux.HandleFunc("GET /api/documents/{id}/read", a.handleReadDocument)
+	mux.HandleFunc("POST /api/documents/{id}/edit", a.handleEditDocument)
+	mux.HandleFunc("GET /api/documents/{id}/threads", a.handleListThreads)
+	mux.HandleFunc("GET /api/documents/{id}/thread", a.handleGetThread)
+	mux.HandleFunc("POST /api/documents/{id}/threads", a.handleCreateThread)
+	mux.HandleFunc("POST /api/documents/{id}/threads/{thread_id}/replies", a.handleReplyThreadByPath)
+	mux.HandleFunc("POST /api/documents/{id}/threads/{thread_id}/resolve", a.handleResolveThreadByPath)
+	mux.HandleFunc("POST /api/documents/{id}/threads/{thread_id}/reopen", a.handleReopenThreadByPath)
+	mux.HandleFunc("POST /api/documents/{id}/thread-replies", a.handleReplyThread)
+	mux.HandleFunc("POST /api/documents/{id}/thread-reanchor", a.handleReanchorThread)
+	mux.HandleFunc("POST /api/documents/{id}/thread-resolve", a.handleResolveThread)
+	mux.HandleFunc("POST /api/documents/{id}/thread-reopen", a.handleReopenThread)
+	mux.HandleFunc("GET /api/documents/{id}/activity", a.handleActivity)
+	mux.HandleFunc("GET /api/documents/{id}/export", a.handleExportDocument)
+	mux.HandleFunc("GET /api/documents/{id}/live", a.hub.HandleLive)
 
 	return withCORS(withLogging(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -60,8 +74,12 @@ func (a *App) Routes() http.Handler {
 }
 
 func (a *App) serveStatic(w http.ResponseWriter, r *http.Request) {
-	if a.staticDir == "" {
+	if a.staticDir == "" && a.staticFS == nil {
 		http.NotFound(w, r)
+		return
+	}
+	if a.staticDir == "" {
+		a.serveStaticFS(w, r)
 		return
 	}
 	path := filepath.Join(a.staticDir, strings.TrimPrefix(r.URL.Path, "/"))
@@ -75,17 +93,72 @@ func (a *App) serveStatic(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, path)
 }
 
+func (a *App) serveStaticFS(w http.ResponseWriter, r *http.Request) {
+	staticPath := strings.TrimPrefix(pathpkg.Clean("/"+r.URL.Path), "/")
+	if staticPath == "" {
+		staticPath = "index.html"
+	}
+	info, err := fs.Stat(a.staticFS, staticPath)
+	if errors.Is(err, fs.ErrNotExist) || (err == nil && info.IsDir()) {
+		staticPath = "index.html"
+	}
+	http.ServeFileFS(w, r, a.staticFS, staticPath)
+}
+
 func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (a *App) handleOpenFile(w http.ResponseWriter, r *http.Request) {
-	doc, err := a.store.OpenDocument(r.Context(), requiredPath(r), actorFromRequest(r))
+func (a *App) handleImportDocument(w http.ResponseWriter, r *http.Request) {
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, domain.NewError(domain.ErrCodeInvalidRequest, "file upload is required", 400))
+		return
+	}
+	defer file.Close()
+	body, err := io.ReadAll(file)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if r.URL.Query().Get("full") == "false" {
+	imported, err := importexport.ImportData(header.Filename, body, header.Filename)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	doc, err := a.store.ImportDocument(r.Context(), imported, actorFromRequest(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, doc)
+}
+
+func (a *App) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Title  string                `json:"title"`
+		Format domain.DocumentFormat `json:"format"`
+		Source string                `json:"source"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, domain.NewError(domain.ErrCodeInvalidRequest, err.Error(), 400))
+		return
+	}
+	doc, err := a.store.CreateDocument(r.Context(), req.Title, req.Format, req.Source, actorFromRequest(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, doc)
+}
+
+func (a *App) handleGetDocument(w http.ResponseWriter, r *http.Request) {
+	doc, err := a.store.GetDocument(r.Context(), documentIDFromRequest(r), actorFromRequest(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if r.URL.Query().Get("summary") == "true" {
 		writeJSON(w, http.StatusOK, domain.DocumentSummary{
 			ID:        doc.ID,
 			Title:     doc.Title,
@@ -98,18 +171,14 @@ func (a *App) handleOpenFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, doc)
 }
 
-func (a *App) handleReadFile(w http.ResponseWriter, r *http.Request) {
-	start := parseIntDefault(r.URL.Query().Get("start"), -1)
-	end := parseIntDefault(r.URL.Query().Get("end"), -1)
-	read, err := a.store.ReadDocument(r.Context(), requiredPath(r), actorFromRequest(r), store.ReadOptions{
-		Full:    r.URL.Query().Get("full") != "false",
-		BlockID: r.URL.Query().Get("block_id"),
-		Start:   start,
-		End:     end,
-		Query:   r.URL.Query().Get("query"),
-		Quote:   r.URL.Query().Get("quote"),
-		Prefix:  r.URL.Query().Get("prefix"),
-		Suffix:  r.URL.Query().Get("suffix"),
+func (a *App) handleReadDocument(w http.ResponseWriter, r *http.Request) {
+	occurrence := parseIntDefault(r.URL.Query().Get("occurrence"), 0)
+	read, err := a.store.ReadDocument(r.Context(), documentIDFromRequest(r), actorFromRequest(r), store.ReadOptions{
+		Full:       r.URL.Query().Get("full") == "true",
+		Match:      r.URL.Query().Get("match"),
+		Before:     r.URL.Query().Get("before"),
+		After:      r.URL.Query().Get("after"),
+		Occurrence: occurrence,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -118,51 +187,42 @@ func (a *App) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, read)
 }
 
-func (a *App) handleEditFile(w http.ResponseWriter, r *http.Request) {
+func (a *App) handleEditDocument(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Path         string         `json:"path"`
-		Position     int            `json:"position"`
-		DeleteCount  int            `json:"delete_count"`
-		InsertText   string         `json:"insert_text"`
-		BaseRevision int64          `json:"base_revision"`
-		Anchor       *domain.Anchor `json:"anchor"`
-		ThreadID     string         `json:"thread_id"`
+		ThreadID   string `json:"thread_id"`
+		Replace    string `json:"replace"`
+		Match      string `json:"match"`
+		Before     string `json:"before"`
+		After      string `json:"after"`
+		Occurrence int    `json:"occurrence"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, domain.NewError(domain.ErrCodeInvalidRequest, err.Error(), 400))
 		return
 	}
-	if req.ThreadID != "" && (req.Anchor != nil || req.BaseRevision != 0 || req.DeleteCount != 0 || req.Position != 0) {
-		writeError(w, domain.NewError(domain.ErrCodeInvalidRequest, "thread edits cannot be combined with anchor or positional edit fields", 400))
-		return
-	}
 	var (
-		actor     = actorFromRequest(r)
 		doc       domain.Document
 		canonical collab.Op
 		thread    *domain.Thread
 		err       error
 	)
+	documentID := documentIDFromRequest(r)
 	if req.ThreadID != "" {
 		var updatedThread domain.Thread
-		updatedThread, doc, canonical, err = a.store.ApplyThreadEdit(r.Context(), req.Path, req.ThreadID, req.InsertText, actor)
+		updatedThread, doc, canonical, err = a.store.ApplyThreadEdit(r.Context(), documentID, req.ThreadID, req.Replace, actorFromRequest(r))
 		thread = &updatedThread
-	} else if req.Anchor != nil {
-		doc, canonical, err = a.store.ApplyAnchorEdit(r.Context(), req.Path, *req.Anchor, req.InsertText, actor)
 	} else {
-		doc, canonical, err = a.store.ApplyOp(r.Context(), req.Path, collab.Op{
-			Position:     req.Position,
-			DeleteCount:  req.DeleteCount,
-			InsertText:   req.InsertText,
-			BaseRevision: req.BaseRevision,
-			Author:       actor,
-		}, actor)
+		doc, canonical, err = a.store.ApplyMatchEdit(r.Context(), documentID, domain.MatchSelector{
+			Match:      req.Match,
+			Before:     req.Before,
+			After:      req.After,
+			Occurrence: req.Occurrence,
+		}, req.Replace, actorFromRequest(r))
 	}
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	canonical.Author = actor
 	a.hub.NotifyOpApplied(doc.ID, doc.Revision, canonical)
 	a.hub.NotifyDocument(doc.ID, "threads", map[string]any{
 		"revision":  doc.Revision,
@@ -176,7 +236,7 @@ func (a *App) handleEditFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleListThreads(w http.ResponseWriter, r *http.Request) {
-	items, err := a.store.ListThreads(r.Context(), requiredPath(r), actorFromRequest(r))
+	items, err := a.store.ListThreads(r.Context(), documentIDFromRequest(r), actorFromRequest(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -193,7 +253,7 @@ func (a *App) handleListThreads(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleGetThread(w http.ResponseWriter, r *http.Request) {
-	thread, err := a.store.GetThread(r.Context(), requiredPath(r), r.URL.Query().Get("thread_id"), actorFromRequest(r))
+	thread, err := a.store.GetThread(r.Context(), documentIDFromRequest(r), r.URL.Query().Get("thread_id"), actorFromRequest(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -203,38 +263,54 @@ func (a *App) handleGetThread(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Path   string         `json:"path"`
-		Body   string         `json:"body"`
-		Start  int            `json:"start"`
-		End    int            `json:"end"`
-		Anchor *domain.Anchor `json:"anchor"`
+		Body       string `json:"body"`
+		Start      int    `json:"start"`
+		End        int    `json:"end"`
+		Match      string `json:"match"`
+		Before     string `json:"before"`
+		After      string `json:"after"`
+		Occurrence int    `json:"occurrence"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, domain.NewError(domain.ErrCodeInvalidRequest, err.Error(), 400))
 		return
 	}
-	doc, err := a.store.GetDocument(r.Context(), req.Path, actorFromRequest(r))
+	documentID := documentIDFromRequest(r)
+	var (
+		thread domain.Thread
+		err    error
+	)
+	switch {
+	case strings.TrimSpace(req.Match) != "":
+		thread, err = a.store.CreateThreadByMatch(r.Context(), documentID, domain.MatchSelector{
+			Match:      req.Match,
+			Before:     req.Before,
+			After:      req.After,
+			Occurrence: req.Occurrence,
+		}, req.Body, actorFromRequest(r))
+	default:
+		doc, docErr := a.store.GetDocument(r.Context(), documentID, actorFromRequest(r))
+		if docErr != nil {
+			writeError(w, docErr)
+			return
+		}
+		anchor, anchorErr := docmodel.AnchorFromSelection(doc, req.Start, req.End)
+		if anchorErr != nil {
+			writeError(w, anchorErr)
+			return
+		}
+		thread, err = a.store.CreateThread(r.Context(), documentID, *anchor, req.Body, actorFromRequest(r))
+	}
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	anchor, err := a.anchorFromRequest(doc, req.Start, req.End, req.Anchor)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	thread, err := a.store.CreateThread(r.Context(), doc.ID, *anchor, req.Body, actorFromRequest(r))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	a.hub.NotifyDocument(doc.ID, "threads", map[string]any{"thread_id": thread.ID})
+	a.hub.NotifyDocument(thread.DocumentID, "threads", map[string]any{"thread_id": thread.ID})
 	writeJSON(w, http.StatusCreated, thread)
 }
 
 func (a *App) handleReplyThread(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Path     string `json:"path"`
 		ThreadID string `json:"thread_id"`
 		Body     string `json:"body"`
 	}
@@ -242,7 +318,24 @@ func (a *App) handleReplyThread(w http.ResponseWriter, r *http.Request) {
 		writeError(w, domain.NewError(domain.ErrCodeInvalidRequest, err.Error(), 400))
 		return
 	}
-	thread, comment, err := a.store.ReplyThread(r.Context(), req.Path, req.ThreadID, req.Body, actorFromRequest(r))
+	thread, comment, err := a.store.ReplyThread(r.Context(), documentIDFromRequest(r), req.ThreadID, req.Body, actorFromRequest(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	a.hub.NotifyDocument(thread.DocumentID, "threads", map[string]any{"thread_id": thread.ID, "comment_id": comment.ID})
+	writeJSON(w, http.StatusCreated, map[string]any{"thread": thread, "comment": comment})
+}
+
+func (a *App) handleReplyThreadByPath(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, domain.NewError(domain.ErrCodeInvalidRequest, err.Error(), 400))
+		return
+	}
+	thread, comment, err := a.store.ReplyThread(r.Context(), documentIDFromRequest(r), r.PathValue("thread_id"), req.Body, actorFromRequest(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -253,27 +346,22 @@ func (a *App) handleReplyThread(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleReanchorThread(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Path     string         `json:"path"`
-		ThreadID string         `json:"thread_id"`
-		Start    int            `json:"start"`
-		End      int            `json:"end"`
-		Anchor   *domain.Anchor `json:"anchor"`
+		ThreadID   string `json:"thread_id"`
+		Match      string `json:"match"`
+		Before     string `json:"before"`
+		After      string `json:"after"`
+		Occurrence int    `json:"occurrence"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, domain.NewError(domain.ErrCodeInvalidRequest, err.Error(), 400))
 		return
 	}
-	doc, err := a.store.GetDocument(r.Context(), req.Path, actorFromRequest(r))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	anchor, err := a.anchorFromRequest(doc, req.Start, req.End, req.Anchor)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	thread, err := a.store.ReanchorThread(r.Context(), req.Path, req.ThreadID, *anchor, actorFromRequest(r))
+	thread, err := a.store.ReanchorThreadByMatch(r.Context(), documentIDFromRequest(r), req.ThreadID, domain.MatchSelector{
+		Match:      req.Match,
+		Before:     req.Before,
+		After:      req.After,
+		Occurrence: req.Occurrence,
+	}, actorFromRequest(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -290,16 +378,33 @@ func (a *App) handleReopenThread(w http.ResponseWriter, r *http.Request) {
 	a.handleThreadStatus(w, r, domain.ThreadStatusOpen)
 }
 
+func (a *App) handleResolveThreadByPath(w http.ResponseWriter, r *http.Request) {
+	a.handleThreadStatusByPath(w, r, domain.ThreadStatusResolved)
+}
+
+func (a *App) handleReopenThreadByPath(w http.ResponseWriter, r *http.Request) {
+	a.handleThreadStatusByPath(w, r, domain.ThreadStatusOpen)
+}
+
 func (a *App) handleThreadStatus(w http.ResponseWriter, r *http.Request, status domain.ThreadStatus) {
 	var req struct {
-		Path     string `json:"path"`
 		ThreadID string `json:"thread_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, domain.NewError(domain.ErrCodeInvalidRequest, err.Error(), 400))
 		return
 	}
-	thread, err := a.store.SetThreadStatus(r.Context(), req.Path, req.ThreadID, status, actorFromRequest(r))
+	thread, err := a.store.SetThreadStatus(r.Context(), documentIDFromRequest(r), req.ThreadID, status, actorFromRequest(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	a.hub.NotifyDocument(thread.DocumentID, "threads", map[string]any{"thread_id": thread.ID})
+	writeJSON(w, http.StatusOK, thread)
+}
+
+func (a *App) handleThreadStatusByPath(w http.ResponseWriter, r *http.Request, status domain.ThreadStatus) {
+	thread, err := a.store.SetThreadStatus(r.Context(), documentIDFromRequest(r), r.PathValue("thread_id"), status, actorFromRequest(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -309,16 +414,11 @@ func (a *App) handleThreadStatus(w http.ResponseWriter, r *http.Request, status 
 }
 
 func (a *App) handleActivity(w http.ResponseWriter, r *http.Request) {
-	items, err := a.store.Activity(r.Context(), requiredPath(r))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, http.StatusOK, []any{})
 }
 
-func (a *App) handleExportFile(w http.ResponseWriter, r *http.Request) {
-	doc, err := a.store.GetDocument(r.Context(), requiredPath(r), actorFromRequest(r))
+func (a *App) handleExportDocument(w http.ResponseWriter, r *http.Request) {
+	doc, err := a.store.GetDocument(r.Context(), documentIDFromRequest(r), actorFromRequest(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -332,19 +432,11 @@ func (a *App) handleExportFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	_ = a.store.RecordActivity(context.Background(), doc.ID, "document.exported", actorFromRequest(r), map[string]any{"format": format})
 	filename := sanitizeFilename(doc.Title) + "." + ext
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
 	w.Header().Set("Content-Type", contentTypeForFormat(format))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
-}
-
-func (a *App) anchorFromRequest(doc domain.Document, start, end int, provided *domain.Anchor) (*domain.Anchor, error) {
-	if provided != nil {
-		return provided, nil
-	}
-	return docmodel.AnchorFromSelection(doc, start, end)
 }
 
 func withLogging(next http.Handler) http.Handler {
@@ -389,8 +481,8 @@ func actorFromRequest(r *http.Request) string {
 	return "agentpad-user"
 }
 
-func requiredPath(r *http.Request) string {
-	return r.URL.Query().Get("path")
+func documentIDFromRequest(r *http.Request) string {
+	return r.PathValue("id")
 }
 
 func parseIntDefault(raw string, fallback int) int {

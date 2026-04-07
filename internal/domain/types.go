@@ -80,13 +80,20 @@ type DocumentSummary struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 }
 
+type MatchSelector struct {
+	Match      string `json:"match"`
+	Before     string `json:"before,omitempty"`
+	After      string `json:"after,omitempty"`
+	Occurrence int    `json:"occurrence,omitempty"`
+}
+
 type DocumentRead struct {
-	DocumentID string  `json:"document_id"`
-	Revision   int64   `json:"revision"`
-	Scope      string  `json:"scope"`
-	Text       string  `json:"text"`
-	Blocks     []Block `json:"blocks,omitempty"`
-	Anchor     *Anchor `json:"anchor,omitempty"`
+	DocumentID string         `json:"document_id"`
+	Revision   int64          `json:"revision"`
+	Scope      string         `json:"scope"`
+	Text       string         `json:"text"`
+	Blocks     []Block        `json:"blocks,omitempty"`
+	Selector   *MatchSelector `json:"selector,omitempty"`
 }
 
 type Comment struct {
@@ -109,17 +116,17 @@ type Thread struct {
 }
 
 type ThreadSummary struct {
-	ID              string       `json:"id"`
-	DocumentID      string       `json:"document_id"`
-	Anchor          Anchor       `json:"anchor"`
-	Status          ThreadStatus `json:"status"`
-	Author          string       `json:"author"`
-	CreatedAt       time.Time    `json:"created_at"`
-	UpdatedAt       time.Time    `json:"updated_at"`
-	CommentCount    int          `json:"comment_count"`
-	LastCommentID   string       `json:"last_comment_id,omitempty"`
-	LastCommentBy   string       `json:"last_comment_by,omitempty"`
-	LastCommentAt   *time.Time   `json:"last_comment_at,omitempty"`
+	ID            string       `json:"id"`
+	DocumentID    string       `json:"document_id"`
+	Anchor        Anchor       `json:"anchor"`
+	Status        ThreadStatus `json:"status"`
+	Author        string       `json:"author"`
+	CreatedAt     time.Time    `json:"created_at"`
+	UpdatedAt     time.Time    `json:"updated_at"`
+	CommentCount  int          `json:"comment_count"`
+	LastCommentID string       `json:"last_comment_id,omitempty"`
+	LastCommentBy string       `json:"last_comment_by,omitempty"`
+	LastCommentAt *time.Time   `json:"last_comment_at,omitempty"`
 }
 
 type Annotation struct {

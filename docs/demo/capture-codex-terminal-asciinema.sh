@@ -9,9 +9,16 @@ CAST_OUT="docs/videos/agentpad-codex-terminal.cast"
 GIF_OUT="docs/videos/agentpad-codex-terminal.gif"
 SOCK="agentpad-demo-$$"
 WINDOW_SIZE="160x24"
-CODEX_COMMAND="codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen -m gpt-5.4-mini -c model_reasoning_effort=low -C $ROOT"
+CODEX_COMMAND="env AGENTPAD_CONFIG=$ROOT/docs/demo/agentpad.demo.toml codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen -m gpt-5.4-mini -c model_reasoning_effort=low -C $ROOT"
 PROMPT="Use \$agentpad. Follow docs/demo/codex-agent-prompt.md exactly to inspect the human review thread, update the plan, and reply in AgentPad."
 CODEX_READY_PATTERN="OpenAI Codex"
+COMPLETION_MARKERS=(
+  "Updated the Goal section in docs/demo/coding-agent-plan.md and replied on the existing human review thread in AgentPad."
+  "I added the rollout KPI and rollback threshold to the Goal section."
+  "What I changed:"
+  "Completed on "
+  "No errors from the AgentPad server or CLI."
+)
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -86,8 +93,14 @@ cat > /tmp/agentpad-asciinema-driver.sh <<'EOF'
 set -euo pipefail
 
 SOCK="$1"
-READY_MARKER="$2"
-PROMPT="$3"
+PROMPT="$2"
+COMPLETION_MARKERS=(
+  "Updated the Goal section in docs/demo/coding-agent-plan.md and replied on the existing human review thread in AgentPad."
+  "I added the rollout KPI and rollback threshold to the Goal section."
+  "What I changed:"
+  "Completed on "
+  "No errors from the AgentPad server or CLI."
+)
 
 for _ in $(seq 1 100); do
   if tmux -L "$SOCK" has-session -t demo >/dev/null 2>&1; then
@@ -103,28 +116,17 @@ fi
 
 sleep 1
 tmux -L "$SOCK" send-keys -t demo:0.0 -l "$PROMPT"
-sleep 6
-
-for _ in $(seq 1 1200); do
-  if [[ -f "$READY_MARKER" ]]; then
-    break
-  fi
-  sleep 0.1
-done
-
-if [[ ! -f "$READY_MARKER" ]]; then
-  echo "Timed out waiting for browser ready marker: $READY_MARKER" >&2
-  exit 1
-fi
-
+sleep 1
 tmux -L "$SOCK" send-keys -t demo:0.0 Enter
 
 for _ in $(seq 1 900); do
   pane="$(tmux -L "$SOCK" capture-pane -pt demo:0.0 || true)"
-  if [[ "$pane" == *"What I changed:"* ]] || [[ "$pane" == *"Completed on "* ]] || [[ "$pane" == *"No errors from the AgentPad server or CLI."* ]]; then
-    sleep 4
-    break
-  fi
+  for marker in "${COMPLETION_MARKERS[@]}"; do
+    if [[ "$pane" == *"$marker"* ]]; then
+      sleep 4
+      break 2
+    fi
+  done
   sleep 0.1
 done
 
@@ -152,7 +154,19 @@ tmux -L "$SOCK" send-keys -t demo:0.0 C-l
 sleep 0.2
 tmux -L "$SOCK" clear-history -t demo:0.0
 
-/tmp/agentpad-asciinema-driver.sh "$SOCK" "$READY_MARKER" "$PROMPT" &
+for _ in $(seq 1 1200); do
+  if [[ -f "$READY_MARKER" ]]; then
+    break
+  fi
+  sleep 0.1
+done
+
+if [[ ! -f "$READY_MARKER" ]]; then
+  echo "Timed out waiting for browser ready marker: $READY_MARKER" >&2
+  exit 1
+fi
+
+/tmp/agentpad-asciinema-driver.sh "$SOCK" "$PROMPT" &
 DRIVER_PID=$!
 
 asciinema rec \
