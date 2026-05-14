@@ -67,6 +67,7 @@ describe("App", () => {
     editorPaneMock.mockClear();
     HTMLElement.prototype.scrollIntoView = vi.fn();
     window.history.replaceState({}, "", "/");
+    localStorage.clear();
     global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = input.toString();
       const method = init?.method ?? "GET";
@@ -211,16 +212,26 @@ describe("App", () => {
     expect(screen.queryByText("Open quote")).toBeNull();
     await waitFor(() => {
       const props = editorPaneMock.mock.calls.at(-1)?.[0] as { threads: Thread[] } | undefined;
-      expect(props?.threads).toEqual([]);
+      expect(props?.threads.map((thread) => thread.id)).toEqual(["thread-open"]);
     });
 
     fireEvent.click(screen.getByRole("button", { name: /resolved quote/i }));
 
     await waitFor(() => {
       const props = editorPaneMock.mock.calls.at(-1)?.[0] as { threads: Thread[] } | undefined;
-      expect(props?.threads.map((thread) => thread.id)).toEqual(["thread-resolved"]);
+      expect(props?.threads.map((thread) => thread.id)).toEqual(["thread-open"]);
     });
     expect(window.location.pathname).toBe(`/${documentId}`);
     expect(new URLSearchParams(window.location.search).get("thread")).toBe("thread-resolved");
+
+    const resolvedHighlightsToggle = screen.getByLabelText(/resolved highlights/i) as HTMLInputElement;
+    expect(resolvedHighlightsToggle.checked).toBe(false);
+    fireEvent.click(resolvedHighlightsToggle);
+
+    await waitFor(() => {
+      const props = editorPaneMock.mock.calls.at(-1)?.[0] as { threads: Thread[]; showResolvedThreadHighlights: boolean } | undefined;
+      expect(props?.showResolvedThreadHighlights).toBe(true);
+      expect(props?.threads.map((thread) => thread.id)).toEqual(["thread-open", "thread-resolved"]);
+    });
   });
 });

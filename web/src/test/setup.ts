@@ -41,6 +41,8 @@ class MockResizeObserver {
   disconnect() {}
 }
 
+const localStorageItems = new Map<string, string>();
+
 Object.defineProperty(globalThis, "WebSocket", {
   writable: true,
   value: MockWebSocket,
@@ -49,4 +51,20 @@ Object.defineProperty(globalThis, "WebSocket", {
 Object.defineProperty(globalThis, "ResizeObserver", {
   writable: true,
   value: MockResizeObserver,
+});
+
+Object.defineProperty(globalThis, "localStorage", {
+  writable: true,
+  value: {
+    getItem: (key: string) => localStorageItems.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      localStorageItems.set(key, value);
+    },
+    removeItem: (key: string) => {
+      localStorageItems.delete(key);
+    },
+    clear: () => {
+      localStorageItems.clear();
+    },
+  },
 });

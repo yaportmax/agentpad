@@ -14,6 +14,7 @@ interface RouteState {
 type CommentsView = "open" | "resolved";
 
 const COMMENTS_WIDTH_STORAGE_KEY = "agentpad.commentsWidth";
+const RESOLVED_THREAD_HIGHLIGHTS_STORAGE_KEY = "agentpad.showResolvedThreadHighlights";
 const DEFAULT_COMMENTS_WIDTH = 560;
 const MIN_COMMENTS_WIDTH = 360;
 const MAX_COMMENTS_WIDTH = 960;
@@ -128,6 +129,10 @@ function readStoredCommentsWidth() {
   return clampCommentsWidth(parsed);
 }
 
+function readStoredResolvedThreadHighlights() {
+  return localStorage.getItem(RESOLVED_THREAD_HIGHLIGHTS_STORAGE_KEY) === "true";
+}
+
 export default function App() {
   const [route, setRoute] = useState<RouteState>(() => readRoute());
   const [actor, setActor] = useState(localStorage.getItem("agentpad.actor") ?? "browser-user");
@@ -143,6 +148,7 @@ export default function App() {
   const [commentsWidth, setCommentsWidth] = useState(() => readStoredCommentsWidth());
   const [commentsCollapsed, setCommentsCollapsed] = useState(false);
   const [commentsView, setCommentsView] = useState<CommentsView>("open");
+  const [showResolvedThreadHighlights, setShowResolvedThreadHighlights] = useState(() => readStoredResolvedThreadHighlights());
   const [createTitle, setCreateTitle] = useState("");
   const [createSource, setCreateSource] = useState("");
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -159,12 +165,7 @@ export default function App() {
   const visibleThreads = commentsView === "open" ? openThreads : resolvedThreads;
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
   const activeVisibleThread = visibleThreads.find((thread) => thread.id === activeThreadId) ?? null;
-  const highlightThreads =
-    commentsView === "open"
-      ? openThreads
-      : activeThread && activeThread.status === "resolved"
-        ? [activeThread]
-        : [];
+  const highlightThreads = showResolvedThreadHighlights ? [...openThreads, ...resolvedThreads] : openThreads;
   const selectionPreview = getSelectionPreview(selection);
   const composerStyle = getComposerStyle(selection);
 
@@ -276,6 +277,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(COMMENTS_WIDTH_STORAGE_KEY, String(commentsWidth));
   }, [commentsWidth]);
+
+  useEffect(() => {
+    localStorage.setItem(RESOLVED_THREAD_HIGHLIGHTS_STORAGE_KEY, String(showResolvedThreadHighlights));
+  }, [showResolvedThreadHighlights]);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -714,6 +719,14 @@ export default function App() {
               <span>Name</span>
               <input value={actor} onChange={(event) => setActor(event.target.value)} placeholder="Display name" />
             </label>
+            <label className="toggle-field" title="Show resolved comment highlights in the editor">
+              <input
+                type="checkbox"
+                checked={showResolvedThreadHighlights}
+                onChange={(event) => setShowResolvedThreadHighlights(event.target.checked)}
+              />
+              <span>Resolved highlights</span>
+            </label>
             <button className="button secondary" onClick={() => setCommentsCollapsed((current) => !current)} aria-pressed={!commentsCollapsed}>
               {commentsToggleLabel}
             </button>
@@ -760,6 +773,7 @@ export default function App() {
             actor={actor}
             threads={highlightThreads}
             activeThreadId={activeThreadId}
+            showResolvedThreadHighlights={showResolvedThreadHighlights}
             onThreadSelect={openThread}
             onSelectionChange={setSelection}
             onPresenceChange={setPresence}

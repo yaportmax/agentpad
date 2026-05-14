@@ -305,6 +305,23 @@ p {
   padding: 0.4rem 0.55rem;
 }
 
+.toggle-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 34px;
+  color: #374151;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.toggle-field input {
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  accent-color: #111827;
+}
+
 .docs-page {
   display: grid;
   gap: 1rem;

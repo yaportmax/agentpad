@@ -138,6 +138,7 @@ interface EditorPaneProps {
   actor: string;
   threads: Thread[];
   activeThreadId: string | null;
+  showResolvedThreadHighlights: boolean;
   onThreadSelect: (threadID: string) => void;
   onSelectionChange: (selection: SelectionRange | null) => void;
   onPresenceChange: (presence: Presence[]) => void;
@@ -165,19 +166,27 @@ function buildSelectionRect(view: EditorView, from: number, to: number) {
   };
 }
 
-function buildThreadDecorations(source: string, threads: Thread[], activeThreadId: string | null) {
+function shouldHighlightThread(thread: Thread, showResolvedThreadHighlights: boolean) {
+  return thread.anchor.resolved && (thread.status === "open" || showResolvedThreadHighlights);
+}
+
+function buildThreadDecorations(
+  source: string,
+  threads: Thread[],
+  activeThreadId: string | null,
+  showResolvedThreadHighlights: boolean,
+) {
   const builder = new RangeSetBuilder<Decoration>();
-  const sortedThreads = [...threads].sort((left, right) => {
-    if (left.anchor.doc_start !== right.anchor.doc_start) {
-      return left.anchor.doc_start - right.anchor.doc_start;
-    }
-    return left.anchor.doc_end - right.anchor.doc_end;
-  });
+  const sortedThreads = threads
+    .filter((thread) => shouldHighlightThread(thread, showResolvedThreadHighlights))
+    .sort((left, right) => {
+      if (left.anchor.doc_start !== right.anchor.doc_start) {
+        return left.anchor.doc_start - right.anchor.doc_start;
+      }
+      return left.anchor.doc_end - right.anchor.doc_end;
+    });
 
   for (const thread of sortedThreads) {
-    if (!thread.anchor.resolved) {
-      continue;
-    }
     const from = clamp(toCodeUnitOffset(source, thread.anchor.doc_start), 0, source.length);
     const to = clamp(toCodeUnitOffset(source, thread.anchor.doc_end), from, source.length);
     if (from === to) {
@@ -249,6 +258,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
     actor,
     threads,
     activeThreadId,
+    showResolvedThreadHighlights,
     onThreadSelect,
     onSelectionChange,
     onPresenceChange,
@@ -267,13 +277,15 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
   const bufferedRef = useRef<Operation[]>([]);
   const sessionIDRef = useRef<string | null>(null);
   const threadsRef = useRef<Thread[]>(threads);
+  const showResolvedThreadHighlightsRef = useRef(showResolvedThreadHighlights);
   const onThreadSelectRef = useRef(onThreadSelect);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
     threadsRef.current = threads;
+    showResolvedThreadHighlightsRef.current = showResolvedThreadHighlights;
     onThreadSelectRef.current = onThreadSelect;
-  }, [threads, onThreadSelect]);
+  }, [threads, showResolvedThreadHighlights, onThreadSelect]);
 
   useImperativeHandle(ref, () => ({
     focusRange(start: number, _end: number) {
@@ -371,7 +383,10 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
             const source = view.state.doc.toString();
             const codePointPosition = toCodePointOffset(source, position);
             const thread = threadsRef.current.find(
-              (item) => codePointPosition >= item.anchor.doc_start && codePointPosition <= item.anchor.doc_end,
+              (item) =>
+                shouldHighlightThread(item, showResolvedThreadHighlightsRef.current) &&
+                codePointPosition >= item.anchor.doc_start &&
+                codePointPosition <= item.anchor.doc_end,
             );
             if (!thread) {
               return false;
@@ -420,7 +435,9 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
 
     viewRef.current = view;
     view.dispatch({
-      effects: setThreadDecorations.of(buildThreadDecorations(document.source, threadsRef.current, activeThreadId)),
+      effects: setThreadDecorations.of(
+        buildThreadDecorations(document.source, threadsRef.current, activeThreadId, showResolvedThreadHighlightsRef.current),
+      ),
     });
     onSelectionChange(null);
 
@@ -450,9 +467,9 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
     }
     const source = viewRef.current.state.doc.toString();
     viewRef.current.dispatch({
-      effects: setThreadDecorations.of(buildThreadDecorations(source, threads, activeThreadId)),
+      effects: setThreadDecorations.of(buildThreadDecorations(source, threads, activeThreadId, showResolvedThreadHighlights)),
     });
-  }, [document?.id, document?.source, threads, activeThreadId]);
+  }, [document?.id, document?.source, threads, activeThreadId, showResolvedThreadHighlights]);
 
   useEffect(() => {
     if (!document) {
