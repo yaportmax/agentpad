@@ -7,6 +7,12 @@ on:
     paths:
       - "mochi_training/source.tar.gz.b64.part-*"
       - ".github/workflows/train-mochi-real-llm.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "mochi_training/source.tar.gz.b64.part-*"
+      - ".github/workflows/train-mochi-real-llm.yml"
   workflow_dispatch:
 
 permissions:
@@ -45,6 +51,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: mochi_training/requirements-app.txt
 
       - name: Cache pretrained Qwen base
         uses: actions/cache@v4
