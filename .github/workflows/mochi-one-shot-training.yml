@@ -1,6 +1,11 @@
 name: Mochi one-shot real LLM training
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/mochi-one-shot-training.yml"
+      - ".github/mochi-training-trigger.txt"
   issue_comment:
     types: [created]
   schedule:
@@ -27,7 +32,7 @@ env:
 
 jobs:
   guard:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event.issue.pull_request && github.event.issue.number == 1 && github.event.comment.body == '/train-mochi-real-llm')
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event.issue.pull_request && github.event.issue.number == 1 && github.event.comment.body == '/train-mochi-real-llm')
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.status.outputs.should_run }}
